@@ -35,6 +35,7 @@ ENV/
 *.swo
 *~
 .DS_Store
+.claude
 
 # ====== 测试 / 覆盖率 ======
 .pytest_cache/
