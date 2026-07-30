@@ -19,6 +19,8 @@ class RuntimeState:
     step_count: int = 0
     max_steps: int = 100
     error: Exception | None = None
+    error_source: str | None = None
+    error_info: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_terminal(self) -> bool:

@@ -3,6 +3,7 @@ import time
 import uuid
 from typing import Any, Callable, TypeAlias
 
+from errors import AgentError
 from runtime.state import RuntimeState, RunStatus
 from runtime.step import Step, StepKind
 from runtime.event import Event, EventType, EventHandler
@@ -32,15 +33,14 @@ class Runtime:
         while not state.is_terminal():
             try:
                 self._step(state)
-            except Exception as e:
-                state.status = RunStatus.FAILED
-                state.error = e
-                self._emit(Event(type=EventType.RUN_ERROR, data={"error": str(e)}, step_index=state.step_count))
+            except AgentError:
                 break
 
         self._emit(Event(
             type=EventType.RUN_FINISH if state.status == RunStatus.FINISHED else EventType.RUN_ERROR,
-            data={"final": state.messages[-1].get("content") if state.messages else None},
+            data={"final": state.messages[-1].get("content") if state.messages else None,
+                  "error_source": state.error_source if state.status == RunStatus.FAILED else None
+                  },
             step_index=state.step_count
         ))
         return state
@@ -54,7 +54,22 @@ class Runtime:
 
         t0 = time.perf_counter()
         self._emit(Event(type=EventType.LLM_REQUEST, step_index=state.step_count))
-        response = self._llm_call(state.messages, None)
+        try:
+            response = self._llm_call(state.messages, None)
+        except AgentError as e:
+            state.status = RunStatus.FAILED
+            state.error = e
+            state.error_source = "llm"
+            state.error_info = e.to_dict()
+            raise
+
+        except Exception as e:
+            state.status = RunStatus.FAILED
+            state.error = e
+            state.error_source = "unknown"
+            raise
+
+
         self._emit(Event(type=EventType.LLM_RESPONSE, data={"response": response}, step_index=state.step_count))
 
         message = response.choices[0].message
@@ -70,11 +85,20 @@ class Runtime:
             for tool_call in message.tool_calls:
                 self._emit(Event(
                     type=EventType.TOOL_REQUEST,
-                    data={"name": tool_call.function_name, "args": tool_call.function.arguments},
+                    data={"name": tool_call.function.name, "args": tool_call.function.arguments},
                     step_index=state.step_count
                 ))
                 t1 = time.perf_counter()
-                result = self._tool_call(tool_call.function.name, tool_call.function.arguments)
+
+                try:
+                    result = self._tool_call(tool_call.function.name, tool_call.function.arguments)
+                except AgentError as e:
+                    state.status = RunStatus.FAILED
+                    state.error_source = "tool"
+                    state.error = e
+                    state.error_info = e.to_dict()
+                    raise
+
                 Step(index=state.step_count, kind=StepKind.TOOL_EXEC,
                      input={"name": tool_call.function.name}, output=result, duration_ms=(time.perf_counter() - t1) * 1000)
                 state.messages.append({

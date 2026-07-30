@@ -1,5 +1,6 @@
 import inspect
 import json
+from errors import ToolError
 
 
 class ToolManager:
@@ -16,9 +17,29 @@ class ToolManager:
 
     def execute(self, tool_call):
         name = tool_call.function.name
-        args = json.loads(tool_call.function.arguments)
-        func = self.tool_map[name]
-        return func(**args)
+        try:
+            args = json.loads(tool_call.function.arguments)
+        except json.JSONDecodeError as e:
+            raise ToolError(
+                f"invalid JSON arguments for tool {name}",
+                context={"tool": name, "raw_arguments": tool_call.function.arguments[:200]},
+            ) from e
+
+        try:
+            func = self.tool_map[name]
+        except KeyError:
+            raise ToolError(
+                f"tool {name} is not registered",
+                context={"tool": name, "available_tools": list(self.tool_map.keys())},
+            )
+
+        try:
+            return func(**args)
+        except Exception as e:
+            raise ToolError(
+                f"tool {name} execution failed",
+                context={"tool": name, "exception_type": type(e).__name__},
+            ) from e
 
     def generate_schema(self, func):
         signature = inspect.signature(func)
