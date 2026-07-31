@@ -8,7 +8,7 @@ class EventType(str, Enum):
     RUN_START = "run.start"
     LLM_REQUEST = "llm.request"
     LLM_RESPONSE = "llm.response"
-    TOOL_REQUEST = "tool.request"
+    # TOOL_REQUEST = "tool.request"
     TOOL_RESPONSE = "tool.response"
     RUN_FINISH = "run.finish"
     RUN_ERROR = "run.error"

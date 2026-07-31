@@ -8,6 +8,9 @@ class LLMClient:
     def __init__(self):
         self.client = OpenAI(api_key=settings.api_key, base_url=settings.base_url)
 
+    def __call__(self, message, tools):
+        return self.chat(message, tools)
+
     def chat(self, messages, tools=None):
         try:
             response = self.client.chat.completions.create(model=settings.model, messages=messages, tools=tools)

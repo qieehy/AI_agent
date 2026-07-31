@@ -1,13 +1,15 @@
-"""测试 runtime/runtime.py 的错误隔离。
+"""测试 runtime/runtime.py 的错误隔离 + D3 集成。
 
-策略：直接传假 llm_call / tool_call 函数（不用 mock），
-验证 state.error_source / state.error_info 是否被正确设置。
+D3 改动：
+- Runtime 构造接收 tool_executor: Executor（不是 tool_call: Callable）
+- Executor.execute_calls 返回 list[ToolResult]
+- 失败时 Executor 装成 ToolResult（不抛），Runtime 看到 failed_count > 0 才 raise
+- RuntimeState.error_info 形状统一
 
-注意：
-- 假 LLM 响应必须让 message.model_dump 是真函数（不是 MagicMock），
-  否则 hasattr 检查会失败。
-- "未知异常逃逸" 测试用 pytest.raises 包 runtime.run，
-  验证非 AgentError 不会被 runtime 吞掉。
+策略：
+- 直接传假 llm_call / Executor
+- Executor 用真 ToolRegistry + 注册假 tool
+- 验证 state.error_source / state.error_info / state.status
 """
 from __future__ import annotations
 import pytest
@@ -16,6 +18,7 @@ from unittest.mock import MagicMock
 from runtime import Runtime
 from runtime.state import RunStatus
 from errors import LLMError, ToolError, AgentError
+from tools import ToolRegistry, Executor
 
 
 # ---------- 辅助函数 ----------
@@ -43,17 +46,21 @@ def _make_tool_call(call_id: str, name: str, arguments: str):
     return tc
 
 
+def _make_runtime(llm_call, registry: ToolRegistry | None = None, mode: str = "parallel") -> Runtime:
+    """构造 Runtime + Executor 的便捷 helper。"""
+    registry = registry if registry is not None else ToolRegistry()
+    executor = Executor(registry, mode=mode)
+    return Runtime(llm_call=llm_call, tool_executor=executor)
+
+
 # ---------- 测试：正常路径 ----------
 
 def test_runtime_runs_to_finished():
-    """正常路径：LLM 一次性返回答案，state.status == FINISHED。"""
+    """正常路径：LLM 直接回答案 → state.status == FINISHED。"""
     def llm(messages, tools):
         return _make_llm_response("hello back")
 
-    def tool(name, args):
-        return "unused"
-
-    runtime = Runtime(llm_call=llm, tool_call=tool)
+    runtime = _make_runtime(llm)
     state = runtime.run("hi")
 
     assert state.status == RunStatus.FINISHED
@@ -70,7 +77,7 @@ def test_runtime_marks_llm_error_source():
     def bad_llm(messages, tools):
         raise LLMError("LLM timeout", context={"model": "gpt-4"})
 
-    runtime = Runtime(llm_call=bad_llm, tool_call=lambda n, a: "x")
+    runtime = _make_runtime(bad_llm)
     state = runtime.run("hi")
 
     assert state.status == RunStatus.FAILED
@@ -83,48 +90,54 @@ def test_runtime_marks_llm_error_source():
 
 # ---------- 测试：Tool 失败 ----------
 
-def test_runtime_marks_tool_error_source():
-    """Tool 抛 ToolError → state.error_source == 'tool'。"""
+def test_runtime_marks_tool_error_when_tool_not_found():
+    """LLM 调不存在的 tool → Executor 返回 failed → Runtime 标 FAILED + tool。"""
     def llm(messages, tools):
-        # LLM 返回带 tool_calls 的响应
         return _make_llm_response(
             content="",
             tool_calls=[_make_tool_call("call_1", "bad_tool", "{}")],
         )
 
-    def bad_tool(name, args):
-        raise ToolError("tool not found", context={"tool": name})
-
-    runtime = Runtime(llm_call=llm, tool_call=bad_tool)
+    # registry 空，"bad_tool" 不存在
+    runtime = _make_runtime(llm)
     state = runtime.run("hi")
 
     assert state.status == RunStatus.FAILED
     assert state.error_source == "tool"
+    # error_info 是 D3 重新构造的 dict（不再来自 e.to_dict()）
     assert state.error_info["type"] == "ToolError"
-    assert state.error_info["message"] == "tool not found"
+    assert "1/1 tool(s) failed" in state.error_info["message"]
 
 
 def test_runtime_succeeds_after_tool_call():
     """正常 Tool 调用：tool 成功 + LLM 收尾 → state.status == FINISHED。"""
-    def llm_responses(messages, tools):
+    registry = ToolRegistry()
+
+    @registry.register
+    def echo(msg: str) -> str:
+        """Echo."""
+        return msg
+
+    call_count = [0]
+
+    def llm(messages, tools):
+        call_count[0] += 1
         # 第一次：返回 tool_call
         # 第二次：返回最终答案
-        if not any(m.get("role") == "tool" for m in messages):
+        if call_count[0] == 1:
             return _make_llm_response(
                 content="",
                 tool_calls=[_make_tool_call("c1", "echo", '{"msg": "hi"}')],
             )
         return _make_llm_response("done")
 
-    def echo_tool(name, args):
-        import json
-        return args  # 原样返回 args（已是 dict）
-
-    runtime = Runtime(llm_call=llm_responses, tool_call=echo_tool)
+    runtime = _make_runtime(llm, registry=registry)
     state = runtime.run("start")
 
     assert state.status == RunStatus.FINISHED
     assert state.error_source is None
+    # 验证 tool_call 真的被调了
+    assert call_count[0] == 2
 
 
 # ---------- 测试：未知异常逃逸 ----------
@@ -134,7 +147,7 @@ def test_runtime_lets_non_agent_error_escape():
     def bad_llm(messages, tools):
         raise KeyError("oops, not an AgentError")
 
-    runtime = Runtime(llm_call=bad_llm, tool_call=lambda n, a: "x")
+    runtime = _make_runtime(bad_llm)
 
     with pytest.raises(KeyError) as excinfo:
         runtime.run("hi")
@@ -153,11 +166,11 @@ def test_runtime_emits_run_start_and_finish():
     def llm(messages, tools):
         return _make_llm_response("hi")
 
-    runtime = Runtime(
-        llm_call=llm,
-        tool_call=lambda n, a: "x",
-        handlers=[handler],
-    )
+    runtime = _make_runtime(llm)
+    # 重建 runtime with handlers
+    registry = ToolRegistry()
+    executor = Executor(registry, mode="parallel")
+    runtime = Runtime(llm_call=llm, tool_executor=executor, handlers=[handler])
     runtime.run("user input")
 
     types = [e.type.value for e in events_received]
@@ -178,11 +191,9 @@ def test_runtime_emits_run_error_on_failure():
     def bad_llm(messages, tools):
         raise LLMError("boom")
 
-    runtime = Runtime(
-        llm_call=bad_llm,
-        tool_call=lambda n, a: "x",
-        handlers=[handler],
-    )
+    registry = ToolRegistry()
+    executor = Executor(registry, mode="parallel")
+    runtime = Runtime(llm_call=bad_llm, tool_executor=executor, handlers=[handler])
     runtime.run("hi")
 
     error_events = [e for e in events_received if e.type.value == "run.error"]
