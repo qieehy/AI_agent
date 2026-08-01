@@ -1,1 +1,1 @@
-from .memory import Memory
+from .short_term import BufferMemory

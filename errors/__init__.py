@@ -4,6 +4,7 @@ from .exceptions import (
     LLMError,
     ToolError,
     ConfigError,
+    MemoryError
 )
 
-__all__ = ["AgentError", "LLMError", "ToolError", "ConfigError"]
+__all__ = ["AgentError", "LLMError", "ToolError", "ConfigError", "MemoryError"]

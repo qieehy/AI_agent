@@ -62,3 +62,6 @@ class ConfigError(AgentError):
 
     ConfigError 不应重试，直接 FAIL。
     """
+
+class MemoryError(AgentError):
+    """记忆层业务失败（存储不可用 / 摘要 LLM 失败 / 向量库宕机）。"""
