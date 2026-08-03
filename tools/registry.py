@@ -1,7 +1,8 @@
 from __future__ import annotations
 import inspect
 from dataclasses import dataclass
-from typing import Any, Callable
+from types import UnionType, NoneType
+from typing import Any, Callable, get_origin, get_args, Literal, Union, Annotated, get_type_hints
 
 
 @dataclass(frozen=True)
@@ -95,12 +96,29 @@ class ToolRegistry:
 
     def _generate_schema(self, func) -> dict:
         sig = inspect.signature(func)
+        hints = get_type_hints(func, include_extras=True)
         properties = {}
         required = []
         for name, param in sig.parameters.items():
-            properties[name] = {"type": self._py_to_json(param.annotation)}
-            if param.default == inspect.Parameter.empty:
+            anno = hints.get(name)
+            if anno is None:
+                anno = str
+            desc = None
+            if get_origin(anno) is Annotated:
+                args = get_args(anno)
+                anno = args[0]
+                desc = args[1]
+
+            properties[name] = dict(self._py_to_json(anno))
+            if desc :
+                properties[name]["description"] = desc
+
+            if param.default is not param.empty:
+                properties[name]["default"] = param.default
+
+            if param.default is inspect.Parameter.empty and not self._is_optional(anno):
                 required.append(name)
+
         return {
             "type": "object",
             "properties": properties,
@@ -108,8 +126,41 @@ class ToolRegistry:
         }
 
     @staticmethod
-    def _py_to_json(py_type) -> str:
-        return {
-            int: "integer", float: "number",
-            str: "string", bool: "boolean",
-        }.get(py_type, "string")
+    def _py_to_json(anno) -> dict:
+        origin = get_origin(anno)
+
+        if origin is None:
+            table = {
+                int: "integer", float: "number",
+                str: "string", bool: "boolean",
+            }
+            return { "type": table[anno]}
+
+        if origin is Literal:
+            values = get_args(anno)
+            return { "type": "string", "enum": list(values)}
+
+        if origin is list:
+            item_type = get_args(anno)[0]
+            return { "type": "array", "items": ToolRegistry._py_to_json(item_type)}
+
+        if origin is dict:
+            return { "type": "object"}
+
+        if origin in (UnionType, Union):
+            args = get_args(anno)
+            if NoneType in args:
+                inner = [a for a in args if a is not NoneType][0]
+                result = ToolRegistry._py_to_json(inner)
+                result["nullable"] = True
+                return result
+        return { "type": "string"}
+
+    @staticmethod
+    def _is_optional(anno) -> bool:
+        origin = get_origin(anno)
+        if origin is UnionType:
+            return type(None) in get_args(anno)
+        if origin is Union:
+            return type(None) in get_args(anno)
+        return False

@@ -300,3 +300,82 @@ def test_executor_get_schemas_forwards():
 
     # disable 后 Executor.get_schemas 也应该返回空
     assert executor.get_schemas() == []
+
+
+# ---------- D5: _generate_schema 类型增强 ----------
+
+from typing import Annotated, Literal, Optional
+
+
+def test_schema_list_str_items():
+    """list[str] → {"type": "array", "items": {"type": "string"}}"""
+    registry = ToolRegistry()
+
+    @registry.register
+    def search(keywords: list[str]) -> list[str]:
+        """Search."""
+        ...
+
+    schema = registry.get_schemas()[0]
+    kw = schema["function"]["parameters"]["properties"]["keywords"]
+    assert kw == {"type": "array", "items": {"type": "string"}}
+
+
+def test_schema_optional_not_required():
+    """Optional[str] → nullable + 不在 required。"""
+    registry = ToolRegistry()
+
+    @registry.register
+    def greet(name: str, title: Optional[str]) -> str:
+        """Greet."""
+        ...
+
+    schema = registry.get_schemas()[0]
+    params = schema["function"]["parameters"]
+    assert "title" not in params["required"]
+    assert params["properties"]["title"] == {"type": "string", "nullable": True}
+
+
+def test_schema_literal_enum():
+    """Literal["a", "b"] → {"type": "string", "enum": ["a", "b"]}"""
+    registry = ToolRegistry()
+
+    @registry.register
+    def set_mode(mode: Literal["fast", "slow"]) -> str:
+        """Set mode."""
+        ...
+
+    schema = registry.get_schemas()[0]
+    mode = schema["function"]["parameters"]["properties"]["mode"]
+    assert mode == {"type": "string", "enum": ["fast", "slow"]}
+
+
+def test_schema_annotated_description():
+    """Annotated[int, "desc"] → {"type": "integer", "description": "desc"}"""
+    registry = ToolRegistry()
+
+    @registry.register
+    def add(a: Annotated[int, "第一个加数"], b: Annotated[int, "第二个加数"]) -> int:
+        """Add."""
+        return a + b
+
+    schema = registry.get_schemas()[0]
+    a = schema["function"]["parameters"]["properties"]["a"]
+    b = schema["function"]["parameters"]["properties"]["b"]
+    assert a == {"type": "integer", "description": "第一个加数"}
+    assert b == {"type": "integer", "description": "第二个加数"}
+
+
+def test_schema_default_value():
+    """x: int = 10 → default + 不在 required。"""
+    registry = ToolRegistry()
+
+    @registry.register
+    def repeat(text: str, times: int = 3) -> str:
+        """Repeat text."""
+        ...
+
+    schema = registry.get_schemas()[0]
+    params = schema["function"]["parameters"]
+    assert "times" not in params["required"]
+    assert params["properties"]["times"] == {"type": "integer", "default": 3}
