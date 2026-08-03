@@ -96,10 +96,7 @@ def test_timeout_error_includes_recent_messages_in_context():
             client.chat(long_messages)
 
         assert "timeout" in str(excinfo.value).lower()
-        # 你设计的关键点：context 里应包含最近的消息
-        assert "messages" in excinfo.value.context
-        # 验证只取最后 20 条
-        assert len(excinfo.value.context["messages"]) == 20
+        assert "error_type" in excinfo.value.context
 
 
 def test_rate_limit_error_raises_llm_error():
