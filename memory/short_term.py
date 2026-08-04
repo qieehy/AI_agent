@@ -9,6 +9,7 @@
 from __future__ import annotations
 from typing import Any
 
+from observability import logger
 from .token_counter import count_message
 
 
@@ -78,6 +79,9 @@ class BufferMemory:
             popped = self._messages[:block_size]
             self._messages = self._messages[block_size:]
             self._total_tokens -= sum(count_message(m) for m in popped)
+            logger.debug(f"Memory trim | evicted={block_size} messages "
+                         f"| remaining={len(self._messages)} "
+                         f"| tokens={self._total_tokens}/{self._max_tokens}")
 
     def _count_turn_block_size(self, start_idx: int) -> int:
         """从 start_idx 起，一个"回合块"包含多少条消息。

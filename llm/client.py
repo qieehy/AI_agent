@@ -4,6 +4,7 @@ import random
 from openai import OpenAI
 from config import settings
 from errors import LLMError
+from observability import logger
 from openai import APIError, APITimeoutError, RateLimitError, AuthenticationError
 
 
@@ -26,8 +27,13 @@ class LLMClient:
                 ) from e
             except (APITimeoutError, RateLimitError, APIError) as e:
                 if attempt < self.max_retries:
-                    time.sleep(self._backoff_delay(attempt))
+                    delay = self._backoff_delay(attempt)
+                    logger.warning(f"LLM retry {attempt + 1}/{self.max_retries} "
+                                   f"| error={type(e).__name__} | delay={delay:.1f}s")
+                    time.sleep(delay)
                 else:
+                    logger.error(f"LLM all retries exhausted "
+                                 f"| error={type(e).__name__}: {e}")
                     raise LLMError(f"LLM request failed after {self.max_retries} retries",
                                    context={"model": settings.model, "error_type": type(e).__name__},
                                    ) from e

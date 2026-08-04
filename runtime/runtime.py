@@ -4,6 +4,7 @@ import uuid
 from typing import Any, Callable, TypeAlias
 
 from errors import AgentError
+from observability import logger, set_trace_id
 from runtime.state import RuntimeState, RunStatus
 from runtime.step import Step, StepKind
 from runtime.event import Event, EventType, EventHandler
@@ -29,12 +30,15 @@ class Runtime:
 
     def run(self, user_input: str, session_id: str | None = None) -> RuntimeState:
         state = self._init_state(user_input, session_id)
+        set_trace_id(state.session_id)
+        logger.info(f"Run started | session={state.session_id} | input={user_input[:100]}")
         self._emit(Event(type=EventType.RUN_START, data={"user_input": user_input}, step_index=0))
 
         while not state.is_terminal():
             try:
                 self._step(state)
             except AgentError:
+                logger.error(f"Run aborted | step={state.step_count} | status={state.status.value}")
                 break
 
         self._emit(Event(
@@ -44,6 +48,7 @@ class Runtime:
                   },
             step_index=state.step_count
         ))
+        logger.info(f"Run finished | status={state.status.value} | steps={state.step_count}")
         return state
 
 
@@ -53,6 +58,7 @@ class Runtime:
             return
 
         t0 = time.perf_counter()
+        logger.debug(f"LLM request | step={state.step_count} | messages={len(state.messages)}")
         self._emit(Event(type=EventType.LLM_REQUEST, step_index=state.step_count))
         try:
             response = self._llm_call(state.messages, self._tool_executor.get_schemas())
@@ -66,6 +72,8 @@ class Runtime:
             raise
 
 
+        duration_ms = (time.perf_counter() - t0) * 1000
+        logger.info(f"LLM response | step={state.step_count} | duration={duration_ms:.0f}ms")
         self._emit(Event(type=EventType.LLM_RESPONSE , data={"response": response}, step_index=state.step_count))
 
         message = response.choices[0].message
@@ -77,6 +85,7 @@ class Runtime:
         if message.tool_calls:
             state.status = RunStatus.AWAITING_TOOL
             state.messages.append(message.model_dump() if hasattr(message, "model_dump") else dict(message))
+            logger.info(f"Tool calls | step={state.step_count} | count={len(message.tool_calls)}")
 
             try:
                 results = self._tool_executor.execute_calls(message.tool_calls)
@@ -96,6 +105,12 @@ class Runtime:
                     "name": r.tool_call.function.name,
                     "content": r.content if r.status == "success" else f"[ERROR {r.error_type}] {r.error}",
                 })
+                if r.status == "failed":
+                    logger.warning(f"Tool failed | name={r.tool_call.function.name} "
+                                   f"error={r.error_type}: {r.error}")
+                else:
+                    logger.info(f"Tool success | name={r.tool_call.function.name} "
+                                f"duration={r.duration_ms:.0f}ms")
                 self._emit(Event(type=EventType.TOOL_RESPONSE, data={
                     "name": r.tool_call.function.name,
                     "status": r.status,
@@ -142,7 +157,8 @@ class Runtime:
             try:
                 handler(event)
             except Exception as e:
-                print(f"[handler error] {type(e).__name__}: {e}")
+                logger.error(f"Event handler error | handler={type(handler).__name__} "
+                             f"error={type(e).__name__}: {e}")
 
     @staticmethod
     def _mark_failed(state, info: dict[str, Any]=None, source="unknown", error=None):
