@@ -19,9 +19,18 @@ from runtime import Runtime
 from runtime.state import RunStatus
 from errors import LLMError, ToolError, AgentError
 from tools import ToolRegistry, Executor
+from memory import MemoryManager, SessionStore
 
 
 # ---------- 辅助函数 ----------
+
+def _make_memory() -> MemoryManager:
+    """每个测试独立的 SQLite 数据库（内存模式）。"""
+    import tempfile, os
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    return MemoryManager(SessionStore(path))
+
 
 def _make_llm_response(content: str = "ok", tool_calls: list | None = None):
     """构造假的 LLM 响应对象（OpenAI 风格）。
@@ -46,11 +55,13 @@ def _make_tool_call(call_id: str, name: str, arguments: str):
     return tc
 
 
-def _make_runtime(llm_call, registry: ToolRegistry | None = None, mode: str = "parallel") -> Runtime:
+def _make_runtime(llm_call, registry: ToolRegistry | None = None, mode: str = "parallel",
+                  memory: MemoryManager | None = None) -> Runtime:
     """构造 Runtime + Executor 的便捷 helper。"""
     registry = registry if registry is not None else ToolRegistry()
     executor = Executor(registry, mode=mode)
-    return Runtime(llm_call=llm_call, tool_executor=executor)
+    memory = memory if memory is not None else _make_memory()
+    return Runtime(llm_call=llm_call, tool_executor=executor, memory=memory)
 
 
 # ---------- 测试：正常路径 ----------
@@ -66,8 +77,6 @@ def test_runtime_runs_to_finished():
     assert state.status == RunStatus.FINISHED
     assert state.error_source is None
     assert state.error is None
-    # 用户消息 + assistant 回复 = 2 条
-    assert len(state.messages) == 2
 
 
 # ---------- 测试：LLM 失败 ----------
@@ -170,7 +179,7 @@ def test_runtime_emits_run_start_and_finish():
     # 重建 runtime with handlers
     registry = ToolRegistry()
     executor = Executor(registry, mode="parallel")
-    runtime = Runtime(llm_call=llm, tool_executor=executor, handlers=[handler])
+    runtime = Runtime(llm_call=llm, tool_executor=executor, handlers=[handler], memory=_make_memory())
     runtime.run("user input")
 
     types = [e.type.value for e in events_received]
@@ -193,7 +202,7 @@ def test_runtime_emits_run_error_on_failure():
 
     registry = ToolRegistry()
     executor = Executor(registry, mode="parallel")
-    runtime = Runtime(llm_call=bad_llm, tool_executor=executor, handlers=[handler])
+    runtime = Runtime(llm_call=bad_llm, tool_executor=executor, handlers=[handler], memory=_make_memory())
     runtime.run("hi")
 
     error_events = [e for e in events_received if e.type.value == "run.error"]

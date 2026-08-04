@@ -9,6 +9,7 @@ from runtime.state import RuntimeState, RunStatus
 from runtime.step import Step, StepKind
 from runtime.event import Event, EventType, EventHandler
 from tools import Executor
+from memory import MemoryManager
 
 LLMCallable: TypeAlias = Callable[[list[dict], list[dict] | None], Any]
 
@@ -20,6 +21,7 @@ class Runtime:
             self,
             llm_call: LLMCallable,
             tool_executor: Executor,
+            memory: MemoryManager,
             handlers: list[EventHandler] | None = None,
             max_steps: int = 100,
     ):
@@ -27,6 +29,15 @@ class Runtime:
         self._handlers = handlers or []
         self._max_steps = max_steps
         self._tool_executor = tool_executor
+        self._memory = memory
+
+    @property
+    def last_message(self) -> dict | None:
+        """当前会话最后一条消息（给 main.py 展示用）。"""
+        if not hasattr(self, "_current_memory"):
+            return None
+        msgs = self._current_memory.messages
+        return msgs[-1] if msgs else None
 
     def run(self, user_input: str, session_id: str | None = None) -> RuntimeState:
         state = self._init_state(user_input, session_id)
@@ -43,7 +54,7 @@ class Runtime:
 
         self._emit(Event(
             type=EventType.RUN_FINISH if state.status == RunStatus.FINISHED else EventType.RUN_ERROR,
-            data={"final": state.messages[-1].get("content") if state.messages else None,
+            data={"final":self._current_memory.messages[-1].get("content") if self._current_memory.messages else None,
                   "error_source": state.error_source if state.status == RunStatus.FAILED else None
                   },
             step_index=state.step_count
@@ -58,10 +69,10 @@ class Runtime:
             return
 
         t0 = time.perf_counter()
-        logger.debug(f"LLM request | step={state.step_count} | messages={len(state.messages)}")
+        logger.debug(f"LLM request | step={state.step_count} | messages={len(self._current_memory.messages)}")
         self._emit(Event(type=EventType.LLM_REQUEST, step_index=state.step_count))
         try:
-            response = self._llm_call(state.messages, self._tool_executor.get_schemas())
+            response = self._llm_call(self._current_memory.get_context(), self._tool_executor.get_schemas())
 
         except AgentError as e:
             self._mark_failed(state=state, error=e, info=e.to_dict(), source="llm")
@@ -84,7 +95,7 @@ class Runtime:
 
         if message.tool_calls:
             state.status = RunStatus.AWAITING_TOOL
-            state.messages.append(message.model_dump() if hasattr(message, "model_dump") else dict(message))
+            self._current_memory.add_message(message.model_dump() if hasattr(message, "model_dump") else dict(message))
             logger.info(f"Tool calls | step={state.step_count} | count={len(message.tool_calls)}")
 
             try:
@@ -99,7 +110,7 @@ class Runtime:
                 raise
 
             for r in results:
-                state.messages.append({
+                self._current_memory.add_message({
                     "role": "tool",
                     "tool_call_id": r.tool_call.id,
                     "name": r.tool_call.function.name,
@@ -137,17 +148,20 @@ class Runtime:
                 return
             state.status = RunStatus.RUNNING
         else:
-            state.messages.append(message.model_dump() if hasattr(message, "model_dump") else dict(message))
+            self._current_memory.add_message(message.model_dump() if hasattr(message, "model_dump") else dict(message))
             state.status = RunStatus.FINISHED
 
 
 
 
     def _init_state(self, user_input: str, session_id: str | None = None) -> RuntimeState:
+        session_id = session_id or str(uuid.uuid4())
+        self._current_memory = self._memory.get_or_create(session_id)
+        self._current_memory.add_message({"role": "user", "content": user_input})
         return RuntimeState(
-            session_id=session_id or str(uuid.uuid4()),
+            session_id=session_id,
             status=RunStatus.RUNNING,
-            messages=[{"role": "user", "content": user_input}],
+            messages=[],
             max_steps=self._max_steps,
         )
 
