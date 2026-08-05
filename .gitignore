@@ -60,6 +60,7 @@ temp/
 *.tmp
 
 # ====== Agent 运行时产物 ======
+data/
 sessions/
 vector_store/
 mcp_cache/

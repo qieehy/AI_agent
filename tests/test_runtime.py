@@ -19,41 +19,13 @@ from runtime import Runtime
 from runtime.state import RunStatus
 from errors import LLMError, ToolError, AgentError
 from tools import ToolRegistry, Executor
-from memory import MemoryManager, SessionStore
+from memory import MemoryManager
+
+from .conftest import make_memory as _make_memory, make_llm_response as _make_llm_response
+from .conftest import make_tool_call as _make_tool_call
 
 
 # ---------- 辅助函数 ----------
-
-def _make_memory() -> MemoryManager:
-    """每个测试独立的 SQLite 数据库（内存模式）。"""
-    import tempfile, os
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    return MemoryManager(SessionStore(path))
-
-
-def _make_llm_response(content: str = "ok", tool_calls: list | None = None):
-    """构造假的 LLM 响应对象（OpenAI 风格）。
-
-    关键：model_dump 必须是真 lambda，不是 MagicMock。
-    runtime 会 hasattr(message, "model_dump") 判断。
-    """
-    response = MagicMock()
-    response.choices = [MagicMock()]
-    response.choices[0].message.content = content
-    response.choices[0].message.tool_calls = tool_calls or []
-    response.choices[0].message.model_dump = lambda: {"role": "assistant", "content": content}
-    return response
-
-
-def _make_tool_call(call_id: str, name: str, arguments: str):
-    """构造假的 tool_call 对象。"""
-    tc = MagicMock()
-    tc.id = call_id
-    tc.function.name = name
-    tc.function.arguments = arguments
-    return tc
-
 
 def _make_runtime(llm_call, registry: ToolRegistry | None = None, mode: str = "parallel",
                   memory: MemoryManager | None = None) -> Runtime:
