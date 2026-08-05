@@ -7,9 +7,10 @@
 4. __cause__ 链 / context 字段正确传递
 """
 from __future__ import annotations
+
 import pytest
 
-from errors import AgentError, LLMError, ToolError, ConfigError
+from errors import AgentError, ConfigError, LLMError, ToolError
 
 
 def test_all_inherit_agent_error():

@@ -1,8 +1,11 @@
 from __future__ import annotations
+
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, TypeAlias
+from typing import Any, TypeAlias
+
 
 class EventType(str, Enum):
     RUN_START = "run.start"

@@ -5,11 +5,8 @@ D4 验收标准核心：锁死截断行为 — system 永不被淘汰、最新�
 """
 from __future__ import annotations
 
-import pytest
-
 from memory.short_term import BufferMemory
 from memory.token_counter import count_message
-
 
 # ---------- 辅助 ----------
 

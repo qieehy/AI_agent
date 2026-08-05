@@ -1,11 +1,11 @@
-import time
 import random
+import time
 
-from openai import OpenAI
+from openai import APIError, APITimeoutError, AuthenticationError, OpenAI, RateLimitError
+
 from config import settings
 from errors import LLMError
 from observability import logger
-from openai import APIError, APITimeoutError, RateLimitError, AuthenticationError
 
 
 class LLMClient:
@@ -48,4 +48,6 @@ class LLMClient:
 
     @staticmethod
     def _backoff_delay(attempt: int, base: float = 1.0) -> float:
-        return base * (2 ** attempt) + random.uniform(0, base*0.3)
+        exponential: float = base * (2 ** attempt)
+        jitter: float = random.uniform(0, base * 0.3)
+        return exponential + jitter

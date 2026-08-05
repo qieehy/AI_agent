@@ -1,5 +1,6 @@
 from typing import Annotated
 
+
 def add(a: Annotated[int, "第一个加数"], b: Annotated[int, "第二个加数"]) -> int:
     """计算两整数相加"""
     return a + b

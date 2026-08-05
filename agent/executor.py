@@ -1,8 +1,8 @@
 
 class Agent:
 
-    def __init__(self, memory, llm, tools, MAX_STEPS=100):
-        self.MAX_STEPS = MAX_STEPS
+    def __init__(self, memory, llm, tools, max_steps=100):
+        self.max_steps = max_steps
         self.memory = memory
         self.llm = llm
         self.tools = tools
@@ -18,7 +18,7 @@ class Agent:
         )
 
 
-        for _ in range(self.MAX_STEPS):
+        for _ in range(self.max_steps):
 
             response = self.llm.chat(self.memory.get_messages(), tools = self.tools.schemas)
             if response is None:
@@ -40,5 +40,5 @@ class Agent:
             else:
                 return message.content
 
-        return f"reached {self.MAX_STEPS} tool calling steps"
+        return f"reached {self.max_steps} tool calling steps"
 

@@ -3,12 +3,12 @@
 所有测试文件都能用 `make_memory` fixture，以及 `make_llm_response` / `make_tool_call` helper。
 """
 from __future__ import annotations
-import tempfile
+
 import os
+import tempfile
 from unittest.mock import MagicMock
 
 from memory import MemoryManager, SessionStore
-
 
 # ========== helpers ==========
 

@@ -1,15 +1,17 @@
 from __future__ import annotations
+
 import time
 import uuid
-from typing import Any, Callable, TypeAlias
+from collections.abc import Callable
+from typing import Any, TypeAlias
 
 from errors import AgentError
-from observability import logger, set_trace_id
-from runtime.state import RuntimeState, RunStatus
-from runtime.step import Step, StepKind
-from runtime.event import Event, EventType, EventHandler
-from tools import Executor
 from memory import MemoryManager
+from observability import logger, set_trace_id
+from runtime.event import Event, EventHandler, EventType
+from runtime.state import RunStatus, RuntimeState
+from runtime.step import Step, StepKind
+from tools import Executor
 
 LLMCallable: TypeAlias = Callable[[list[dict], list[dict] | None], Any]
 
@@ -175,7 +177,7 @@ class Runtime:
                              f"error={type(e).__name__}: {e}")
 
     @staticmethod
-    def _mark_failed(state, info: dict[str, Any]=None, source="unknown", error=None):
+    def _mark_failed(state, info: dict[str, Any] | None = None, source="unknown", error=None):
         """集中标记 FAILED 状态。"""
 
         state.error_info = info or {

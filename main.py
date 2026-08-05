@@ -1,10 +1,9 @@
-import uuid
 
 from llm import LLMClient
-from tools import Executor, create_registry
-from runtime import Runtime
-from observability import setup_logging, logger
 from memory import create_memory_manager
+from observability import logger, setup_logging
+from runtime import Runtime
+from tools import Executor, create_registry
 
 
 def main():

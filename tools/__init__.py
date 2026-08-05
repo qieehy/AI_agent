@@ -1,6 +1,6 @@
-from .registry import ToolRegistry, Tool
 from . import calculator  # 让注册可见
-from .executor import Executor, ToolResult, ExecutionMode
+from .executor import ExecutionMode, Executor, ToolResult
+from .registry import Tool, ToolRegistry
 
 
 def create_registry() -> ToolRegistry:

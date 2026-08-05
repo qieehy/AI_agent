@@ -1,8 +1,10 @@
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
-def get_file_path(marker = ".env") -> Path:
+
+def get_file_path(marker: str = ".env") -> Path:
     current = Path(__file__).resolve().parent
     while current != current.parent:
         if(current/marker).exists():

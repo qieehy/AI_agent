@@ -1,1 +1,1 @@
-from .client import LLMClient
+from .client import LLMClient as LLMClient

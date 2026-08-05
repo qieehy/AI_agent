@@ -10,8 +10,7 @@
 """
 from __future__ import annotations
 
-from memory.token_counter import count_text, count_message, count_messages
-
+from memory.token_counter import count_message, count_messages, count_text
 
 # ---------- count_text ----------
 

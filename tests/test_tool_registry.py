@@ -11,13 +11,15 @@
 - Executor 永远不抛异常——所有失败都转成 ToolResult(status="failed")
 """
 from __future__ import annotations
+
 import time
-import pytest
+from typing import Annotated, Literal
 from unittest.mock import MagicMock
 
-from tools.registry import ToolRegistry
-from tools.executor import Executor, ToolResult
+import pytest
 
+from tools.executor import Executor
+from tools.registry import ToolRegistry
 
 # ---------- 辅助函数 ----------
 
@@ -304,8 +306,6 @@ def test_executor_get_schemas_forwards():
 
 # ---------- D5: _generate_schema 类型增强 ----------
 
-from typing import Annotated, Literal, Optional
-
 
 def test_schema_list_str_items():
     """list[str] → {"type": "array", "items": {"type": "string"}}"""
@@ -326,7 +326,7 @@ def test_schema_optional_not_required():
     registry = ToolRegistry()
 
     @registry.register
-    def greet(name: str, title: Optional[str]) -> str:
+    def greet(name: str, title: str | None) -> str:
         """Greet."""
         ...
 

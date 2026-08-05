@@ -1,12 +1,13 @@
 """测试 memory/session_store.py — SQLite 会话持久化 CRUD。"""
 from __future__ import annotations
-import tempfile
+
+import contextlib
 import os
+import tempfile
 
 import pytest
 
 from memory import SessionStore
-
 
 # ========== fixture ==========
 
@@ -17,10 +18,8 @@ def store():
     os.close(fd)
     s = SessionStore(path)
     yield s
-    try:
+    with contextlib.suppress(OSError):
         os.unlink(path)
-    except OSError:
-        pass
 
 
 # ========== save + load ==========

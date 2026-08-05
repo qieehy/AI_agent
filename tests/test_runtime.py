@@ -12,18 +12,18 @@ D3 改动：
 - 验证 state.error_source / state.error_info / state.status
 """
 from __future__ import annotations
-import pytest
-from unittest.mock import MagicMock
 
+import pytest
+
+from errors import LLMError
+from memory import MemoryManager
 from runtime import Runtime
 from runtime.state import RunStatus
-from errors import LLMError, ToolError, AgentError
-from tools import ToolRegistry, Executor
-from memory import MemoryManager
+from tools import Executor, ToolRegistry
 
-from .conftest import make_memory as _make_memory, make_llm_response as _make_llm_response
+from .conftest import make_llm_response as _make_llm_response
+from .conftest import make_memory as _make_memory
 from .conftest import make_tool_call as _make_tool_call
-
 
 # ---------- 辅助函数 ----------
 

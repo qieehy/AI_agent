@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
-from types import UnionType, NoneType
-from typing import Any, Callable, get_origin, get_args, Literal, Union, Annotated, get_type_hints
+from types import NoneType, UnionType
+from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
 
 @dataclass(frozen=True)

@@ -7,9 +7,11 @@
 4. tool 回合块整体淘汰（assistant tool_calls + 它的 tool 结果一起删）
 """
 from __future__ import annotations
+
 from typing import Any
 
 from observability import logger
+
 from .token_counter import count_message
 
 

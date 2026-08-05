@@ -7,14 +7,14 @@
 否则 __init__ 里的 OpenAI(...) 会覆盖 mock。
 """
 from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+from openai import APIError, APITimeoutError, AuthenticationError, RateLimitError
 
-from openai import APIError, APITimeoutError, RateLimitError, AuthenticationError
-
-from llm.client import LLMClient
 from errors import LLMError
-
+from llm.client import LLMClient
 
 # ---------- 辅助函数 ----------
 
@@ -52,8 +52,8 @@ def _make_fake_openai_error(exc_class, message: str = "fake error"):
 
 def test_chat_success_returns_response():
     """正常路径：不抛异常，返回 response。"""
-    with patch("llm.client.OpenAI") as MockOpenAI:
-        mock_client = MockOpenAI.return_value
+    with patch("llm.client.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
         mock_client.chat.completions.create.return_value = _make_fake_response("hello")
 
         client = LLMClient()
@@ -65,8 +65,8 @@ def test_chat_success_returns_response():
 
 def test_authentication_error_translates_to_llm_error():
     """AuthenticationError → LLMError + message 含 authentication。"""
-    with patch("llm.client.OpenAI") as MockOpenAI:
-        mock_client = MockOpenAI.return_value
+    with patch("llm.client.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
         mock_client.chat.completions.create.side_effect = _make_fake_openai_error(
             AuthenticationError, "Invalid API key"
         )
@@ -85,8 +85,8 @@ def test_timeout_error_includes_recent_messages_in_context():
     """APITimeoutError → LLMError + context 含最近的消息。"""
     long_messages = [{"role": "user", "content": f"msg {i}"} for i in range(50)]
 
-    with patch("llm.client.OpenAI") as MockOpenAI:
-        mock_client = MockOpenAI.return_value
+    with patch("llm.client.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
         mock_client.chat.completions.create.side_effect = _make_fake_openai_error(
             APITimeoutError, "Request timeout"
         )
@@ -101,8 +101,8 @@ def test_timeout_error_includes_recent_messages_in_context():
 
 def test_rate_limit_error_raises_llm_error():
     """RateLimitError → LLMError + context 含 model。"""
-    with patch("llm.client.OpenAI") as MockOpenAI:
-        mock_client = MockOpenAI.return_value
+    with patch("llm.client.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
         mock_client.chat.completions.create.side_effect = _make_fake_openai_error(
             RateLimitError, "Rate limit exceeded"
         )
@@ -117,8 +117,8 @@ def test_rate_limit_error_raises_llm_error():
 
 def test_generic_api_error_raises_llm_error():
     """APIError（兜底）→ LLMError + message 含 'api error'。"""
-    with patch("llm.client.OpenAI") as MockOpenAI:
-        mock_client = MockOpenAI.return_value
+    with patch("llm.client.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
         mock_client.chat.completions.create.side_effect = _make_fake_openai_error(
             APIError, "Generic API error"
         )
@@ -132,8 +132,8 @@ def test_generic_api_error_raises_llm_error():
 
 def test_unexpected_exception_caught_by_fallback():
     """非 OpenAI 异常（网络/SSL）→ except Exception 兜底 → LLMError。"""
-    with patch("llm.client.OpenAI") as MockOpenAI:
-        mock_client = MockOpenAI.return_value
+    with patch("llm.client.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
         # 模拟 SSL 错误这种非 OpenAI 异常
         mock_client.chat.completions.create.side_effect = ConnectionError("SSL handshake failed")
 
@@ -152,8 +152,8 @@ def test_llm_error_preserves_cause_chain():
     """所有路径：__cause__ 必须指向原始异常（不让原始信息丢失）。"""
     original = _make_fake_openai_error(APITimeoutError, "boom")
 
-    with patch("llm.client.OpenAI") as MockOpenAI:
-        mock_client = MockOpenAI.return_value
+    with patch("llm.client.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
         mock_client.chat.completions.create.side_effect = original
 
         client = LLMClient()

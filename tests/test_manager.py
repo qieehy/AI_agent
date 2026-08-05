@@ -1,14 +1,14 @@
 """测试 memory/manager.py — MemoryManager 缓存 + 持久化协调。"""
 from __future__ import annotations
-import tempfile
+
+import contextlib
 import os
+import tempfile
 
 import pytest
 
-from memory import MemoryManager, SessionStore, BufferMemory
-from memory import create_memory_manager
 from errors import MemoryError
-
+from memory import BufferMemory, MemoryManager, SessionStore, create_memory_manager
 
 # ========== fixtures ==========
 
@@ -19,10 +19,8 @@ def mgr():
     os.close(fd)
     m = MemoryManager(SessionStore(path))
     yield m
-    try:
+    with contextlib.suppress(OSError):
         os.unlink(path)
-    except OSError:
-        pass
 
 
 def _make_msg(role: str = "user", content: str = "hello"):
@@ -194,7 +192,5 @@ def test_create_memory_manager():
         # 验证数据库文件确实创建了
         assert os.path.exists(path)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(path)
-        except OSError:
-            pass

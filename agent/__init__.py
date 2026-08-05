@@ -1,1 +1,1 @@
-from .executor import Agent
+from .executor import Agent as Agent
