@@ -1,23 +1,18 @@
-import os
-from pathlib import Path
-
-from dotenv import load_dotenv
+from anyio.functools import lru_cache
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def get_file_path(marker: str = ".env") -> Path:
-    current = Path(__file__).resolve().parent
-    while current != current.parent:
-        if(current/marker).exists():
-            return current/marker
-        current = current.parent
-    raise FileNotFoundError(f"Could not find {marker} in {current.parent}")
+class Settings(BaseSettings):
+    api_key: str
+    model: str
+    base_url: str
 
-load_dotenv(dotenv_path=get_file_path())
+    model_config = SettingsConfigDict(
+        env_file = ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
-class Settings:
-    def __init__(self):
-        self.api_key = os.getenv("API_KEY")
-        self.base_url = os.getenv("BASE_URL_CHAT")
-        self.model = os.getenv("MODEL")
-
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
