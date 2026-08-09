@@ -83,11 +83,8 @@ def test_runtime_marks_tool_error_when_tool_not_found():
     runtime = _make_runtime(llm)
     state = runtime.run("hi")
 
-    assert state.status == RunStatus.FAILED
-    assert state.error_source == "tool"
-    # error_info 是 D3 重新构造的 dict（不再来自 e.to_dict()）
-    assert state.error_info["type"] == "ToolError"
-    assert "1/1 tool(s) failed" in state.error_info["message"]
+    # D15: tool 失败不再终止，LLM 自行判断 → 循环直到 max_steps
+    assert state.status == RunStatus.MAX_STEP
 
 
 def test_runtime_succeeds_after_tool_call():

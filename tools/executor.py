@@ -88,7 +88,8 @@ class Executor:
             )
 
         try:
-            content = tool.func(**args)
+            result = tool.func(**args)
+            content = Executor.serialize_tool_result(result)
             return ToolResult(
                 tool_call = tool_call,
                 status = "success",
@@ -104,3 +105,14 @@ class Executor:
                 error_type = type(e).__name__,
                 duration_ms = (time.perf_counter() - t0) * 1000,
             )
+
+    @staticmethod
+    def serialize_tool_result(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            default=str,
+        )

@@ -149,7 +149,7 @@ def test_executor_success():
 
     assert len(results) == 1
     assert results[0].status == "success"
-    assert results[0].content == 3
+    assert results[0].content == "3"   # D15: executor 序列化非 str 返回值
     assert results[0].error is None
 
 
@@ -237,8 +237,8 @@ def test_executor_batch_serial():
     results = executor.execute_calls(tcs)
 
     assert len(results) == 2
-    assert results[0].content == 3   # add(1,2) = 3
-    assert results[1].content == 12  # multiply(3,4) = 12
+    assert results[0].content == "3"   # add(1,2) = 3, 序列化为 "3"
+    assert results[1].content == "12"  # multiply(3,4) = 12
 
 
 def test_executor_batch_parallel_preserves_order():
@@ -264,8 +264,8 @@ def test_executor_batch_parallel_preserves_order():
     results = executor.execute_calls(tcs)
 
     # 即使 fast 先完成，结果顺序仍是 [slow, fast]
-    assert results[0].content == 2
-    assert results[1].content == 102
+    assert results[0].content == "2"
+    assert results[1].content == "102"
 
 
 def test_executor_batch_partial_failure():
@@ -285,7 +285,7 @@ def test_executor_batch_partial_failure():
     results = executor.execute_calls(tcs)
 
     assert results[0].status == "success"
-    assert results[0].content == 3
+    assert results[0].content == "3"
     assert results[1].status == "failed"
 
 

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any, TypeAlias
 
 from errors import AgentError
-from memory import MemoryManager
+from memory import MemoryManager, BufferMemory
 from observability import logger, set_trace_id
 from runtime.event import Event, EventHandler, EventType
 from runtime.state import RunStatus, RuntimeState
@@ -23,7 +23,7 @@ class Runtime:
             self,
             llm_call: LLMCallable,
             tool_executor: Executor,
-            memory: MemoryManager,
+            memory_manager: MemoryManager,
             handlers: list[EventHandler] | None = None,
             max_steps: int = 100,
     ):
@@ -31,7 +31,7 @@ class Runtime:
         self._handlers = handlers or []
         self._max_steps = max_steps
         self._tool_executor = tool_executor
-        self._memory = memory
+        self._memory_manager = memory_manager
 
     @property
     def last_message(self) -> dict | None:
@@ -44,12 +44,13 @@ class Runtime:
     def run(self, user_input: str, session_id: str | None = None) -> RuntimeState:
         state = self._init_state(user_input, session_id)
         set_trace_id(state.session_id)
+        memory = self._memory_manager.get_or_create(session_id)
         logger.info(f"Run started | session={state.session_id} | input={user_input[:100]}")
         self._emit(Event(type=EventType.RUN_START, data={"user_input": user_input}, step_index=0))
 
         while not state.is_terminal():
             try:
-                self._step(state)
+                self._run_steps(state, memory)
             except AgentError:
                 logger.error(f"Run aborted | step={state.step_count} | status={state.status.value}")
                 break
@@ -65,9 +66,9 @@ class Runtime:
         return state
 
 
-    def _step(self, state: RuntimeState) -> None:
+    def _run_steps(self, state: RuntimeState, memory: BufferMemory) -> None:
         if state.step_count >= state.max_steps:
-            state.status = RunStatus.FINISHED
+            state.status = RunStatus.MAX_STEP
             return
 
         t0 = time.perf_counter()
@@ -90,9 +91,9 @@ class Runtime:
         self._emit(Event(type=EventType.LLM_RESPONSE , data={"response": response}, step_index=state.step_count))
 
         message = response.choices[0].message
-        Step(index=state.step_count, kind=StepKind.LLM_CALL,
+        state.steps.append(Step(index=state.step_count, kind=StepKind.LLM_CALL,
              output=message.model_dump() if hasattr(message, "model_dump") else dict(message),
-             duration_ms=(time.perf_counter() - t0) * 1000,)
+             duration_ms=(time.perf_counter() - t0) * 1000,))
         state.step_count += 1
 
         if message.tool_calls:
@@ -112,12 +113,17 @@ class Runtime:
                 raise
 
             for r in results:
-                self._current_memory.add_message({
+                tool_msg = {
                     "role": "tool",
                     "tool_call_id": r.tool_call.id,
                     "name": r.tool_call.function.name,
                     "content": r.content if r.status == "success" else f"[ERROR {r.error_type}] {r.error}",
-                })
+                }
+                state.steps.append(Step(index=state.step_count, kind=StepKind.TOOL_EXEC,
+                                        output=tool_msg,
+                                        duration_ms=r.duration_ms))
+                state.step_count += 1
+                self._current_memory.add_message(tool_msg)
                 if r.status == "failed":
                     logger.warning(f"Tool failed | name={r.tool_call.function.name} "
                                    f"error={r.error_type}: {r.error}")
@@ -135,31 +141,17 @@ class Runtime:
 
             failed_count = sum(1 for r in results if r.status == "failed")
             if failed_count > 0:
-                info = {
-                    "type": "ToolError",
-                    "message": f"{failed_count}/{len(results)} tool(s) failed",
-                    "context": {
-                        "failed_calls": [
-                            {"name": r.tool_call.function.name, "error": r.error, "error_type": r.error_type}
-                            for r in results if r.status == "failed"
-                        ],
-                    },
-                    "cause": None,
-                }
-                self._mark_failed(state=state, source="tool", info=info)
-                return
+                logger.warning(f"Tool partial failure | {failed_count}/{len(results)} failed | will retry")
             state.status = RunStatus.RUNNING
         else:
             self._current_memory.add_message(message.model_dump() if hasattr(message, "model_dump") else dict(message))
             state.status = RunStatus.FINISHED
 
 
-
-
     def _init_state(self, user_input: str, session_id: str | None = None) -> RuntimeState:
         session_id = session_id or str(uuid.uuid4())
-        self._current_memory = self._memory.get_or_create(session_id)
-        self._current_memory.add_message({"role": "user", "content": user_input})
+        _current_memory = self._memory_manager.get_or_create(session_id)
+        _current_memory.add_message({"role": "user", "content": user_input})
         return RuntimeState(
             session_id=session_id,
             status=RunStatus.RUNNING,

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from .step import Step
+
 
 class RunStatus(str, Enum):
     PENDING = "pending"
@@ -12,11 +14,13 @@ class RunStatus(str, Enum):
     FINISHED = "finished"
     FAILED = "failed"
     CANCELED = "canceled"
+    MAX_STEP = "max_step"
 
 @dataclass
 class RuntimeState:
     session_id: str
     status: RunStatus = RunStatus.PENDING
+    steps: list[Step] = field(default_factory=list)
     messages:list[dict[str,Any]] = field(default_factory=list)
     step_count: int = 0
     max_steps: int = 100
@@ -26,4 +30,4 @@ class RuntimeState:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_terminal(self) -> bool:
-        return self.status in (RunStatus.FINISHED, RunStatus.FAILED, RunStatus.CANCELED)
+        return self.status in (RunStatus.FINISHED, RunStatus.FAILED, RunStatus.CANCELED, RunStatus.MAX_STEP)
