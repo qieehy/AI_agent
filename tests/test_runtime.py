@@ -28,12 +28,12 @@ from .conftest import make_tool_call as _make_tool_call
 # ---------- 辅助函数 ----------
 
 def _make_runtime(llm_call, registry: ToolRegistry | None = None, mode: str = "parallel",
-                  memory: MemoryManager | None = None) -> Runtime:
+                  memory_manager: MemoryManager | None = None) -> Runtime:
     """构造 Runtime + Executor 的便捷 helper。"""
     registry = registry if registry is not None else ToolRegistry()
     executor = Executor(registry, mode=mode)
-    memory = memory if memory is not None else _make_memory()
-    return Runtime(llm_call=llm_call, tool_executor=executor, memory=memory)
+    memory_manager = memory_manager if memory_manager is not None else _make_memory()
+    return Runtime(llm_call=llm_call, tool_executor=executor, memory_manager=memory_manager)
 
 
 # ---------- 测试：正常路径 ----------
@@ -148,7 +148,7 @@ def test_runtime_emits_run_start_and_finish():
     # 重建 runtime with handlers
     registry = ToolRegistry()
     executor = Executor(registry, mode="parallel")
-    runtime = Runtime(llm_call=llm, tool_executor=executor, handlers=[handler], memory=_make_memory())
+    runtime = Runtime(llm_call=llm, tool_executor=executor, handlers=[handler], memory_manager=_make_memory())
     runtime.run("user input")
 
     types = [e.type.value for e in events_received]
@@ -171,7 +171,7 @@ def test_runtime_emits_run_error_on_failure():
 
     registry = ToolRegistry()
     executor = Executor(registry, mode="parallel")
-    runtime = Runtime(llm_call=bad_llm, tool_executor=executor, handlers=[handler], memory=_make_memory())
+    runtime = Runtime(llm_call=bad_llm, tool_executor=executor, handlers=[handler], memory_manager=_make_memory())
     runtime.run("hi")
 
     error_events = [e for e in events_received if e.type.value == "run.error"]

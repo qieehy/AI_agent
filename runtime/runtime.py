@@ -33,31 +33,24 @@ class Runtime:
         self._tool_executor = tool_executor
         self._memory_manager = memory_manager
 
-    @property
-    def last_message(self) -> dict | None:
-        """当前会话最后一条消息（给 main.py 展示用）。"""
-        if not hasattr(self, "_current_memory"):
-            return None
-        msgs = self._current_memory.messages
-        return msgs[-1] if msgs else None
 
     def run(self, user_input: str, session_id: str | None = None) -> RuntimeState:
         state = self._init_state(user_input, session_id)
         set_trace_id(state.session_id)
-        memory = self._memory_manager.get_or_create(session_id)
+        _memory = self._memory_manager.get_or_create(state.session_id)
         logger.info(f"Run started | session={state.session_id} | input={user_input[:100]}")
         self._emit(Event(type=EventType.RUN_START, data={"user_input": user_input}, step_index=0))
 
         while not state.is_terminal():
             try:
-                self._run_steps(state, memory)
+                self._run_steps(state)
             except AgentError:
                 logger.error(f"Run aborted | step={state.step_count} | status={state.status.value}")
                 break
 
         self._emit(Event(
             type=EventType.RUN_FINISH if state.status == RunStatus.FINISHED else EventType.RUN_ERROR,
-            data={"final":self._current_memory.messages[-1].get("content") if self._current_memory.messages else None,
+            data={"final":_memory.messages[-1].get("content") if _memory.messages else None,
                   "error_source": state.error_source if state.status == RunStatus.FAILED else None
                   },
             step_index=state.step_count
@@ -66,16 +59,16 @@ class Runtime:
         return state
 
 
-    def _run_steps(self, state: RuntimeState, memory: BufferMemory) -> None:
+    def _run_steps(self, state: RuntimeState) -> None:
         if state.step_count >= state.max_steps:
             state.status = RunStatus.MAX_STEP
             return
-
+        _memory = self._memory_manager.get_or_create(state.session_id)
         t0 = time.perf_counter()
-        logger.debug(f"LLM request | step={state.step_count} | messages={len(self._current_memory.messages)}")
+        logger.debug(f"LLM request | step={state.step_count} | messages={len(_memory.messages)}")
         self._emit(Event(type=EventType.LLM_REQUEST, step_index=state.step_count))
         try:
-            response = self._llm_call(self._current_memory.get_context(), self._tool_executor.get_schemas())
+            response = self._llm_call(_memory.get_context(), self._tool_executor.get_schemas())
 
         except AgentError as e:
             self._mark_failed(state=state, error=e, info=e.to_dict(), source="llm")
@@ -98,7 +91,7 @@ class Runtime:
 
         if message.tool_calls:
             state.status = RunStatus.AWAITING_TOOL
-            self._current_memory.add_message(message.model_dump() if hasattr(message, "model_dump") else dict(message))
+            _memory.add_message(message.model_dump() if hasattr(message, "model_dump") else dict(message))
             logger.info(f"Tool calls | step={state.step_count} | count={len(message.tool_calls)}")
 
             try:
@@ -123,7 +116,7 @@ class Runtime:
                                         output=tool_msg,
                                         duration_ms=r.duration_ms))
                 state.step_count += 1
-                self._current_memory.add_message(tool_msg)
+                _memory.add_message(tool_msg)
                 if r.status == "failed":
                     logger.warning(f"Tool failed | name={r.tool_call.function.name} "
                                    f"error={r.error_type}: {r.error}")
@@ -144,7 +137,7 @@ class Runtime:
                 logger.warning(f"Tool partial failure | {failed_count}/{len(results)} failed | will retry")
             state.status = RunStatus.RUNNING
         else:
-            self._current_memory.add_message(message.model_dump() if hasattr(message, "model_dump") else dict(message))
+            _memory.add_message(message.model_dump() if hasattr(message, "model_dump") else dict(message))
             state.status = RunStatus.FINISHED
 
 

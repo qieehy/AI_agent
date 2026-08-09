@@ -30,7 +30,7 @@ def chat(model: str | None = None):
             console.print("[dim]会话已重置[/dim]")
             continue
         elif q == "/history":
-            msgs = runtime._current_memory.messages if hasattr(runtime, "_current_memory") else []
+            msgs = memory_manager.get_or_create(session_id=session_id).messages
             for m in msgs:
                 role = m.get("role", "?")
                 content = str(m.get("content", ""))[:120]
@@ -54,7 +54,7 @@ def chat(model: str | None = None):
             err = state.error_info or {}
             logger.error(f"[{state.error_source}] {err.get('message', '?')}")
         else:
-            last = runtime.last_message
+            last = memory_manager.get_or_create(session_id).messages[-1]
             console.print(Markdown(last.get("content", "[no content]") if last else "[no content]"))
 
 
