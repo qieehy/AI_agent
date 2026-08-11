@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any, TypeAlias
 
 from errors import AgentError
-from memory import MemoryManager, BufferMemory
+from memory import MemoryManager
 from observability import logger, set_trace_id
 from runtime.event import Event, EventHandler, EventType
 from runtime.state import RunStatus, RuntimeState
