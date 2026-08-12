@@ -33,4 +33,8 @@ jobs:
         run: mypy llm/ memory/ tools/ runtime/ errors/ config/ observability/ --ignore-missing-imports
 
       - name: Test with pytest
+        env:
+          API_KEY: ci-test-key
+          MODEL: ci-test-model
+          BASE_URL: https://ci-test.example.com
         run: pytest tests/ --cov --cov-report=term-missing --tb=short
