@@ -64,10 +64,13 @@ ignore = ["E501"]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
-python_version = "3.10"
+python_version = "3.12"
 ignore_missing_imports = true
 warn_return_any = true
 warn_unused_configs = true
+
+# numpy 2.5+ stub 使用 PEP 695 (type 语句) 语法，需要 mypy python_version >= 3.12 才能解析。
+# 代码的 3.10 运行时兼容性由 CI 矩阵（pytest 3.10/3.11/3.12）兜底。
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
