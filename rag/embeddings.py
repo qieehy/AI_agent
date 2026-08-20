@@ -1,8 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import cast
 
-from sentence_transformers import SentenceTransformer
-
 
 class EmbeddingService(ABC):
     """向量化服务接口"""
@@ -21,6 +19,10 @@ class EmbeddingService(ABC):
 class LocalEmbeddingService(EmbeddingService):
     """基于 sentence-transforming 的本地 BGE 模型"""
     def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as e:
+            raise ImportError("LocalEmbeddingService 需要 rag extras: pip install -e '.[rag]'") from e
         self._model = SentenceTransformer(model_name)
 
     def embed(self, text: str) -> list[float]:

@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-import faiss
 import numpy as np
 
+try:
+    import faiss
+except ImportError:
+    faiss = None
 
 @dataclass(frozen=True)
 class SearchHit:
@@ -24,6 +27,8 @@ class VectorStore(ABC):
 
 class FAISSVectorStore(VectorStore):
     def __init__(self):
+        if faiss is None:
+            raise ImportError("FAISSVectorStore 需要 rag extras: pip install -e '.[rag]'")
         self._index: faiss.IndexFlatIP | None = None
         self._ids: list[str] = []
         self._vectors: list[list[float]] = []
