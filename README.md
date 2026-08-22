@@ -2,7 +2,7 @@
 
 生产级 Agent 框架——从脚本到产品的 37 天演进。
 
-**v0.1.0** — 健壮 Runtime：异常隔离、Token 管理、Schema 自动生成、重试退避。
+**v0.3.0** — 工具 + RAG + 多模态：文件/网络/Shell 工具、混合检索 + 精排、带引用的 RAG 问答、视觉服务。
 
 ## 架构
 
@@ -57,7 +57,7 @@ python main.py
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v        # 81 tests, ~2s
+pytest tests/ -v        # 188 tests
 ```
 
 ## 技术栈
@@ -77,6 +77,15 @@ pytest tests/ -v        # 81 tests, ~2s
 - [x] LLM 客户端重试：指数退避 + jitter，临时异常重试、永久异常直接抛
 - [x] 81 测试 + 1 万轮压力测试
 
+## v0.3.0 特性
+
+- [x] RAG 管线：PDF 切块 → BGE 向量化 → FAISS 检索 → 带引用生成
+- [x] 混合检索 + 精排：BM25 + RRF 融合召回，cross-encoder 两段式精排
+- [x] 引用溯源：答案携带 [n] 编号来源（文件 / 页码 / 分数）
+- [x] 视觉服务：VisionService 接口 + OpenAIVisionService（待接真实端点验收）
+- [x] 工具扩展：文件 / 网络 / Shell 三件套（沙箱 + 白名单）
+- [x] 工程化：日志 trace_id / SQLite 持久化 / pydantic-settings / CLI / CI
+
 ## 路线图
 
 37 天分 6 周：[完整计划](doc/37天_Agent_Framework_终极学习路径.md)
@@ -84,8 +93,8 @@ pytest tests/ -v        # 81 tests, ~2s
 | 周 | 主题 | 里程碑 |
 |---|---|---|
 | Week 1 | Agent Runtime 重构（防御优先） | v0.1 ✅ |
-| Week 2 | 工程化升级（日志/持久化/CI/CLI） | v0.2 |
-| Week 3 | 工具扩展 + RAG + 多模态 | v0.3 |
+| Week 2 | 工程化升级（日志/持久化/CI/CLI） | v0.2 ✅ |
+| Week 3 | 工具扩展 + RAG + 多模态 | v0.3 ✅ |
 | Week 4 | 高级 Agent（Streaming/异步/Planner/Reflection） | v0.4 |
 | Week 5 | MCP + Multi-Agent + 安全 | v0.5 |
 | Week 6 | 产品化（FastAPI/WebUI/Docker） | v1.0 |

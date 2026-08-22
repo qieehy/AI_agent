@@ -7,13 +7,30 @@
 
 ## [Unreleased]
 
-### Planned (Week 2)
-- 日志系统：loguru / structlog + JSON 输出 + trace_id
-- Memory 持久化：SQLite + MemoryManager 工厂
-- 测试体系：覆盖率 ≥ 70%
-- CI/CD：GitHub Actions lint + test
-- 配置中心：pydantic-settings 替代 os.getenv
-- CLI 升级：typer + rich
+### Planned (Week 4)
+- Streaming 输出
+- 异步 Runtime
+- Planner / Reflection
+
+## [0.3.0] - 2026-08-22
+
+v0.2（D8-D14 工程化）未单独发版记录，此版本一并收录 D8-D21。
+
+### Added
+- **RAG 管线**（D20）：PDF 加载 → 切块 → 嵌入 → FAISS 检索 → LLM 生成；重索引幂等（双存储先删旧账）
+- **引用溯源**（D21）：`Answer(text, sources)` 编号来源 [n]，prompt 编号与 sources 一一对应
+- **混合检索**（D21）：BM25Index（中文 bigram）+ RRF 融合 dense/sparse 两路召回
+- **精排**（D21）：CrossEncoderReranker（bge-reranker-v2-m3），两段式：fetch 召回 → 精排 top_k
+- **视觉服务**（D21）：VisionService ABC + OpenAIVisionService（base64 data URL，默认 gpt-4o-mini，懒加载）
+- **向量化 / 向量库**（D18/D19）：BGE 本地嵌入服务 + FAISS CRUD
+- **工具扩展**（D15-D17）：文件工具（路径沙箱）、网络工具（SSRF 沙箱）、Shell 工具（白名单 + 超时 + 输出截断）
+- **工程化**（D8-D14）：loguru 结构化日志 + trace_id、SQLite 持久化、pydantic-settings 配置中心、typer + rich CLI、GitHub Actions（ruff / mypy / pytest）
+
+### Fixed
+- CI 注入假环境变量供 pydantic-settings 校验
+
+### Tests
+- 188 tests；真 BGE / reranker 模型测试经 importorskip 门控，CI 轻量运行
 
 ## [0.1.0] - 2026-08-03
 
