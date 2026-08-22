@@ -3,14 +3,22 @@
 用法：
     python rag_demo.py <pdf路径>
 
-流程：加载 PDF -> 切块 -> BGE 向量化 -> 入 FAISS -> 交互问答。
+流程：加载 PDF -> 切块 -> 双路召回（BGE 向量 + BM25 关键词）-> RRF 融合
+      -> cross-encoder 精排 -> LLM 问答。
 依赖全部由工厂组装（组合根），demo 不 new 任何具体类。
 回答中的 [编号] 是 LLM 引用的上下文块，对应的来源脚注打印在下方（D21 citation）。
+来源里的 score 是精排分（logits，只有相对大小有意义）。
 """
 import sys
 
 from llm import LLMClient
-from rag import BM25Index, create_embedding_service, create_rag_pipeline, create_vector_store
+from rag import (
+    BM25Index,
+    create_embedding_service,
+    create_rag_pipeline,
+    create_reranker,
+    create_vector_store,
+)
 
 # 中文 Windows 管道 stdout 默认 GBK，LLM 回答可能含 GBK 编不了的字符（如 U+202F），
 # 统一重配为 UTF-8；errors="replace" 兜底避免任何字符让脚本崩溃。
@@ -27,7 +35,11 @@ def main() -> None:
     vector_store = create_vector_store()
     llm_client = LLMClient()
     pipeline = create_rag_pipeline(
-        embedding_service, vector_store, llm_client, keyword_index=BM25Index()
+        embedding_service,
+        vector_store,
+        llm_client,
+        keyword_index=BM25Index(),
+        reranker=create_reranker(),
     )
 
     path = sys.argv[1]
@@ -51,10 +63,10 @@ def main() -> None:
         if answer.sources:
             print("\n来源:")
             for source in answer.sources:
-                page = source.metadata.get("page", "?")
-                doc = source.metadata.get("source", "?")
                 preview = source.text.replace("\n", " ")[:80]
-                print(f"  [{source.number}] {doc} 第 {page} 页 | {preview}...")
+                print(
+                    f"  [{source.number}] {source.source} 第 {source.page} 页 | {preview}..."
+                )
 
 
 if __name__ == "__main__":

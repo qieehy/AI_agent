@@ -6,6 +6,7 @@ from .chunking import Chunk, chunk_text
 from .embeddings import EmbeddingService
 from .hybrid import BM25Index, rrf_fuse
 from .loader import load_pdf
+from .rerank import Reranker
 from .vector_store import VectorStore
 
 
@@ -40,12 +41,13 @@ class RAGPipeline:
     """
 
     def __init__(self, embedding_service: EmbeddingService, vector_store: VectorStore, llm_client: LLMClient,
-                 keyword_index: BM25Index | None = None,
+                 keyword_index: BM25Index | None = None, reranker: Reranker | None = None,
                  chunk_size=500, overlap=100):
         self.embedding_service = embedding_service
         self.vector_store = vector_store
         self.llm_client = llm_client
         self.keyword_index = keyword_index
+        self.reranker = reranker
 
         self.chunk_size = chunk_size
         self.overlap = overlap
@@ -118,24 +120,32 @@ class RAGPipeline:
 
         return len(chunks)
 
-    def ask(self, question: str, top_k: int = 3) -> Answer:
-        """检索 top_k 个块，按 [1..n] 编号拼入 user 消息，由 LLM 依据上下文回答。
+    def ask(self, question: str, top_k: int = 3, fetch_k=None) -> Answer:
+        """两段式检索 + 生成：召回 fetch 个候选，精排到 top_k，编号拼入 user 消息。
 
-        编号让 LLM 回答携带引用标记（如 "[1]"），是 D21 citation 的种子；
-        [n] 是本次检索的临时编号，与块的全局 id 无关。
-        无命中返回提示语；返回 LLM 文本（content 为空时Answer.text返回空串）。
+        - 召回段：dense 向量检索（+ 可选 BM25 关键词，RRF 融合），各取 fetch 个
+          （fetch = fetch_k 或 top_k）。候选池要大于最终 top_k 才有精排空间
+        - 精排段：注入 reranker 时对候选重新打分取 top_k；无 reranker 时
+          fetch 退化为 top_k，一段式检索，行为与 D20 相同
+        - [n] 是本次检索的临时编号，与块的全局 id 无关；编号让 LLM 回答携带
+          引用标记（如 "[1]"），与 Answer.sources 的 number 一一对应
+        - 无命中返回提示语 + 空 sources；LLM content 为空时 Answer.text 回退空串
         """
+        fetch = fetch_k or top_k
         query_vector = self.embedding_service.embed(question)
 
         if self.keyword_index is not None:
-            dense_hits = self.vector_store.search(query_vector, top_k)
-            sparse_hits = self.keyword_index.search(question, top_k)
-            hits = rrf_fuse(dense_hits, sparse_hits, top_k)
+            dense_hits = self.vector_store.search(query_vector, fetch)
+            sparse_hits = self.keyword_index.search(question, fetch)
+            hits = rrf_fuse(dense_hits, sparse_hits, fetch)
         else:
-            hits = self.vector_store.search(query_vector, top_k)
+            hits = self.vector_store.search(query_vector, fetch)
 
         if not hits:
             return Answer(text="知识库中没有找到相关内容")
+
+        if self.reranker is not None:
+            hits = self.reranker.rerank(question, hits, top_k)
 
         sources = [Source(id=hit.id, number=i, score=hit.score, metadata=hit.metadata) for i, hit in enumerate(hits, start=1)]
         context = "\n\n".join([

@@ -83,6 +83,25 @@ def hybrid_env(env):
     )
 
 
+class FakeReranker:
+    """按块文本长度降序的确定性假 reranker——编排测试不碰 2.3GB 模型，CI 直接跑。"""
+
+    def rerank(self, query, hits, top_k):
+        return sorted(hits, key=lambda h: len(h.metadata["text"]), reverse=True)[:top_k]
+
+
+@pytest.fixture
+def rerank_env(env):
+    """env + FakeReranker 接入（两段式编排，零重依赖）。"""
+    reranker = FakeReranker()
+    pipeline = create_rag_pipeline(
+        FakeEmbedder(), env.store, env.llm, reranker=reranker
+    )
+    return SimpleNamespace(
+        pipeline=pipeline, store=env.store, llm=env.llm, reranker=reranker
+    )
+
+
 def _patch_pdf(monkeypatch, pages: list[str]):
     monkeypatch.setattr(
         pipeline_module,
@@ -246,3 +265,50 @@ def test_ask_fuses_keyword_hits_into_context(hybrid_env, monkeypatch):
     user = hybrid_env.llm.chat.call_args.args[0][1]["content"]
     assert "数据库是核心" in user  # keyword 路补上 dense 漏掉的块
     assert "完全不相关" in user  # dense 路自己的块也在
+
+
+# ---------- rerank ----------
+
+def test_ask_two_stage_fetch_more_than_top_k(rerank_env, monkeypatch, mocker):
+    """两段式：召回段按 fetch_k 取候选（> top_k），精排段截到 top_k。"""
+    _patch_pdf(monkeypatch, ["第一页", "第二页"])
+    rerank_env.pipeline.index_pdf("doc.pdf")
+
+    spy = mocker.spy(rerank_env.store, "search")
+    rerank_env.pipeline.ask("问题？", top_k=1, fetch_k=5)
+
+    assert spy.call_args.args[1] == 5  # 召回段用 fetch_k 而不是 top_k
+
+
+def test_ask_reranked_order_reaches_prompt(rerank_env, monkeypatch):
+    """prompt 上下文顺序 = reranker 精排后的顺序（FakeReranker 按长度降序）。"""
+    _patch_pdf(monkeypatch, ["短", "这段文本明显更长"])
+    rerank_env.pipeline.index_pdf("doc.pdf")
+
+    rerank_env.pipeline.ask("问题？", top_k=2, fetch_k=5)
+
+    user = rerank_env.llm.chat.call_args.args[0][1]["content"]
+    assert user.index("这段文本明显更长") < user.index("短")
+
+
+def test_reranker_receives_fetch_candidates_and_top_k(rerank_env, monkeypatch, mocker):
+    """reranker 收到召回段的全量候选，并被要求截到 top_k。"""
+    _patch_pdf(monkeypatch, ["第一页", "第二页"])
+    rerank_env.pipeline.index_pdf("doc.pdf")
+
+    spy = mocker.spy(rerank_env.reranker, "rerank")
+    rerank_env.pipeline.ask("问题？", top_k=1, fetch_k=5)
+
+    assert len(spy.call_args.args[1]) == 2  # 库里共 2 块，全量候选
+    assert spy.call_args.args[2] == 1  # 精排目标 top_k
+
+
+def test_ask_without_reranker_fetches_top_k(env, monkeypatch, mocker):
+    """无 reranker：fetch 退化为 top_k（旧行为不变）。"""
+    _patch_pdf(monkeypatch, ["第一页", "第二页"])
+    env.pipeline.index_pdf("doc.pdf")
+
+    spy = mocker.spy(env.store, "search")
+    env.pipeline.ask("问题？", top_k=3)
+
+    assert spy.call_args.args[1] == 3

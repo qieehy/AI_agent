@@ -13,6 +13,10 @@ class SearchHit:
     id: str
     score: float
     metadata: dict
+    @property
+    def text(self):
+        return self.metadata["text"]
+
 
 
 class VectorStore(ABC):
