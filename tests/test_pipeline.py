@@ -15,6 +15,7 @@ import pytest
 
 import rag.pipeline as pipeline_module
 from rag import SearchHit, create_rag_pipeline
+from rag.hybrid import BM25Index
 from rag.loader import PageText
 
 
@@ -66,6 +67,22 @@ def env(mocker):
     return SimpleNamespace(pipeline=pipeline, store=store, llm=llm)
 
 
+@pytest.fixture
+def hybrid_env(env):
+    """env + 真 BM25Index 接入 pipeline（BM25 纯 Python 轻量，用真的不 fake）。
+
+    经 create_rag_pipeline(..., keyword_index=...) 构造，
+    同时钉死工厂签名的 keyword_index 透传。
+    """
+    keyword_index = BM25Index()
+    pipeline = create_rag_pipeline(
+        FakeEmbedder(), env.store, env.llm, keyword_index=keyword_index
+    )
+    return SimpleNamespace(
+        pipeline=pipeline, store=env.store, llm=env.llm, keyword_index=keyword_index
+    )
+
+
 def _patch_pdf(monkeypatch, pages: list[str]):
     monkeypatch.setattr(
         pipeline_module,
@@ -113,11 +130,13 @@ def test_chunk_metadata_carries_source_page_text(env, monkeypatch):
 # ---------- ask ----------
 
 def test_ask_returns_llm_text(env, monkeypatch):
-    """LLM 的 content 原样返回。"""
+    """LLM 的 content 原样进入 Answer.text，sources 非空。"""
     _patch_pdf(monkeypatch, ["知识库正文"])
     env.pipeline.index_pdf("doc.pdf")
 
-    assert env.pipeline.ask("问题？") == "标准答案[1]"
+    answer = env.pipeline.ask("问题？")
+    assert answer.text == "标准答案[1]"
+    assert len(answer.sources) == 1
 
 
 def test_ask_prompt_contains_numbered_context_and_question(env, monkeypatch):
@@ -136,17 +155,94 @@ def test_ask_prompt_contains_numbered_context_and_question(env, monkeypatch):
 
 
 def test_ask_returns_hint_when_store_empty(env):
-    """空库：返回提示语，且不调 LLM。"""
-    assert env.pipeline.ask("问题？") == "知识库中没有找到相关内容"
+    """空库：提示语 + 空 sources，且不调 LLM。"""
+    answer = env.pipeline.ask("问题？")
+    assert answer.text == "知识库中没有找到相关内容"
+    assert answer.sources == []
     env.llm.chat.assert_not_called()
 
 
-def test_ask_returns_empty_string_when_content_none(env, monkeypatch, mocker):
-    """API 安全过滤返回 content=None：ask 返回空串而不是 None。"""
+def test_ask_returns_empty_string_when_content_none(env, monkeypatch):
+    """API 安全过滤返回 content=None：text 回退空串，sources 不受影响（检索先于生成）。"""
     _patch_pdf(monkeypatch, ["知识库正文"])
     env.pipeline.index_pdf("doc.pdf")
     env.llm.chat.return_value = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=None))]
     )
 
-    assert env.pipeline.ask("问题？") == ""
+    answer = env.pipeline.ask("问题？")
+    assert answer.text == ""
+    assert len(answer.sources) == 1
+
+
+def test_ask_sources_numbered_from_one_with_hit_data(env, monkeypatch):
+    """citation 核心契约：number 从 1 递增，id/score/元数据来自命中的块。"""
+    _patch_pdf(monkeypatch, ["第一页内容", "第二页内容"])
+    env.pipeline.index_pdf("doc.pdf")
+
+    answer = env.pipeline.ask("问题？", top_k=5)
+
+    assert [s.number for s in answer.sources] == [1, 2]
+    assert [s.id for s in answer.sources] == ["doc.pdf:1:0", "doc.pdf:2:0"]
+    for source in answer.sources:
+        assert source.metadata["source"] == "doc.pdf"
+        assert source.text == source.metadata["text"]
+    assert answer.sources[0].score == 1.0
+
+
+def test_ask_sources_numbering_matches_prompt_context(env, monkeypatch):
+    """prompt 里 [n] 的编号与 Answer.sources 的 number 一一对应（同一次检索同一编号）。"""
+    _patch_pdf(monkeypatch, ["第一页内容", "第二页内容"])
+    env.pipeline.index_pdf("doc.pdf")
+
+    answer = env.pipeline.ask("问题？", top_k=5)
+
+    user = env.llm.chat.call_args.args[0][1]["content"]
+    for source in answer.sources:
+        assert f"[{source.number}] {source.text}" in user
+
+
+# ---------- hybrid ----------
+
+def test_index_pdf_feeds_keyword_index(hybrid_env, monkeypatch):
+    """索引时关键词索引同步喂入：命中的块 id 与向量库同一套方案。"""
+    _patch_pdf(monkeypatch, ["第一页内容", "第二页内容"])
+    hybrid_env.pipeline.index_pdf("doc.pdf")
+
+    hits = hybrid_env.keyword_index.search("第一页", top_k=5)
+
+    assert [h.id for h in hits] == ["doc.pdf:1:0"]
+
+
+def test_reindex_removes_old_chunks_from_keyword_index(hybrid_env, monkeypatch):
+    """重复索引：关键词索引同样先删旧账（D20 stale-tail 的第二个表面）。"""
+    _patch_pdf(monkeypatch, ["数据库是核心" * 100])
+    hybrid_env.pipeline.index_pdf("doc.pdf")
+    assert len(hybrid_env.keyword_index.search("数据库", top_k=50)) > 0
+
+    _patch_pdf(monkeypatch, ["完全不相关内容"])
+    hybrid_env.pipeline.index_pdf("doc.pdf")
+
+    assert hybrid_env.keyword_index.search("数据库", top_k=50) == []
+
+
+def test_ask_fuses_keyword_hits_into_context(hybrid_env, monkeypatch):
+    """dense 路漏掉的块，keyword 路命中后必须进入 prompt 上下文。"""
+    _patch_pdf(monkeypatch, ["数据库是核心", "完全不相关"])
+    hybrid_env.pipeline.index_pdf("doc.pdf")
+
+    # dense 只返回不相关的块（模拟向量分低没进 top_k）
+    original_search = hybrid_env.store.search
+    monkeypatch.setattr(
+        hybrid_env.store,
+        "search",
+        lambda query, top_k=5: [
+            h for h in original_search(query, top_k) if h.id == "doc.pdf:2:0"
+        ],
+    )
+
+    hybrid_env.pipeline.ask("数据库", top_k=3)
+
+    user = hybrid_env.llm.chat.call_args.args[0][1]["content"]
+    assert "数据库是核心" in user  # keyword 路补上 dense 漏掉的块
+    assert "完全不相关" in user  # dense 路自己的块也在

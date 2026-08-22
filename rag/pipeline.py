@@ -1,10 +1,34 @@
+from dataclasses import dataclass, field
+
 from llm import LLMClient
 
 from .chunking import Chunk, chunk_text
 from .embeddings import EmbeddingService
+from .hybrid import BM25Index, rrf_fuse
 from .loader import load_pdf
 from .vector_store import VectorStore
 
+
+@dataclass(frozen=True)
+class Source:
+    id: str
+    number: int
+    score: float
+    metadata: dict
+    @property
+    def text(self):
+        return self.metadata["text"]
+    @property
+    def page(self):
+        return self.metadata["page"]
+    @property
+    def source(self):
+        return self.metadata["source"]
+
+@dataclass(frozen=True)
+class Answer:
+    text: str
+    sources: list[Source] = field(default_factory=list)
 
 class RAGPipeline:
     """RAG 管线：索引 PDF 入向量库，检索 + 生成回答。
@@ -15,10 +39,13 @@ class RAGPipeline:
     （先读旧账删除，成功后写新账）。
     """
 
-    def __init__(self, embedding_service: EmbeddingService, vector_store: VectorStore, llm_client: LLMClient, chunk_size=500, overlap=100):
+    def __init__(self, embedding_service: EmbeddingService, vector_store: VectorStore, llm_client: LLMClient,
+                 keyword_index: BM25Index | None = None,
+                 chunk_size=500, overlap=100):
         self.embedding_service = embedding_service
         self.vector_store = vector_store
         self.llm_client = llm_client
+        self.keyword_index = keyword_index
 
         self.chunk_size = chunk_size
         self.overlap = overlap
@@ -51,7 +78,7 @@ class RAGPipeline:
                         id=f"{path}:{page.page}:{chunk.metadata['chunk_index']}",
                         text=chunk.text,
                         metadata={
-                            **chunk.metadata,
+                            **chunk.metadata,     #一开始chunk的局部 chunk_index
                             "source": path,
                             "page": page.page,
                             "text": chunk.text
@@ -64,7 +91,10 @@ class RAGPipeline:
 
         vectors = self.embedding_service.embed_batch(texts)
 
-        self.vector_store.delete(self._doc_chunks.get(path, []))
+        self.vector_store.delete(self._doc_chunks.get(path, []))     #若文件已处理过一次，删去原已经处理过的vectors
+
+        if self.keyword_index is not None:
+            self.keyword_index.delete(self._doc_chunks.get(path, []))
 
         self.vector_store.add(
             ids=[
@@ -79,29 +109,39 @@ class RAGPipeline:
                 for chunk in chunks
             ]
         )
+
+        if self.keyword_index is not None:
+            for chunk in chunks:
+                self.keyword_index.add(chunk.id, chunk.text, chunk.metadata)
+
         self._doc_chunks[path] = [chunk.id for chunk in chunks]
 
         return len(chunks)
 
-    def ask(self, question: str, top_k: int = 3) -> str:
+    def ask(self, question: str, top_k: int = 3) -> Answer:
         """检索 top_k 个块，按 [1..n] 编号拼入 user 消息，由 LLM 依据上下文回答。
 
         编号让 LLM 回答携带引用标记（如 "[1]"），是 D21 citation 的种子；
         [n] 是本次检索的临时编号，与块的全局 id 无关。
-        无命中返回提示语；返回 LLM 文本（content 为空时返回空串）。
+        无命中返回提示语；返回 LLM 文本（content 为空时Answer.text返回空串）。
         """
         query_vector = self.embedding_service.embed(question)
 
-        hits = self.vector_store.search(query_vector, top_k)
+        if self.keyword_index is not None:
+            dense_hits = self.vector_store.search(query_vector, top_k)
+            sparse_hits = self.keyword_index.search(question, top_k)
+            hits = rrf_fuse(dense_hits, sparse_hits, top_k)
+        else:
+            hits = self.vector_store.search(query_vector, top_k)
+
         if not hits:
-            return "知识库中没有找到相关内容"
+            return Answer(text="知识库中没有找到相关内容")
 
-        contexts = [
-            f"[{i}] {hit.metadata['text']}"
-            for i, hit in enumerate(hits, start=1)
-        ]
-
-        context = "\n\n".join(contexts)
+        sources = [Source(id=hit.id, number=i, score=hit.score, metadata=hit.metadata) for i, hit in enumerate(hits, start=1)]
+        context = "\n\n".join([
+            f"[{source.number}] {source.text}"
+            for source in sources
+        ])
 
         messages = [
             {
@@ -126,7 +166,7 @@ class RAGPipeline:
             }
         ]
         response = self.llm_client.chat(messages)
-        content = response.choices[0].message.content
-        return content or ""
+        answer = Answer(text=response.choices[0].message.content or "", sources=sources)
+        return answer
 
 
