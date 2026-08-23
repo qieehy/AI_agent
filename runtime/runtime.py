@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from types import SimpleNamespace
 from typing import Any, TypeAlias
 
-from errors import AgentError
+from errors import AgentError, LLMError
 from memory import MemoryManager
 from observability import logger, set_trace_id
 from runtime.event import Event, EventHandler, EventType
@@ -14,6 +15,7 @@ from runtime.step import Step, StepKind
 from tools import Executor
 
 LLMCallable: TypeAlias = Callable[[list[dict], list[dict] | None], Any]
+LLMStreamCallable: TypeAlias = Callable[[list[dict], list[dict] | None], Iterator[Any]]
 
 
 class Runtime:
@@ -24,9 +26,11 @@ class Runtime:
             llm_call: LLMCallable,
             tool_executor: Executor,
             memory_manager: MemoryManager,
+            llm_stream: LLMStreamCallable | None = None,
             handlers: list[EventHandler] | None = None,
             max_steps: int = 100,
     ):
+        self._llm_stream = llm_stream
         self._llm_call = llm_call
         self._handlers = handlers or []
         self._max_steps = max_steps
@@ -68,25 +72,23 @@ class Runtime:
         logger.debug(f"LLM request | step={state.step_count} | messages={len(_memory.messages)}")
         self._emit(Event(type=EventType.LLM_REQUEST, step_index=state.step_count))
         try:
-            response = self._llm_call(_memory.get_context(), self._tool_executor.get_schemas())
-
+            message = self._get_llm_message(state=state, messages=_memory.get_context(), schemas=self._tool_executor.get_schemas())
         except AgentError as e:
             self._mark_failed(state=state, error=e, info=e.to_dict(), source="llm")
             raise
 
         except Exception as e:
-            self._mark_failed(state=state, error=e)
+            self._mark_failed(state=state, error=e, source="llm")
             raise
 
 
         duration_ms = (time.perf_counter() - t0) * 1000
         logger.info(f"LLM response | step={state.step_count} | duration={duration_ms:.0f}ms")
-        self._emit(Event(type=EventType.LLM_RESPONSE , data={"response": response}, step_index=state.step_count))
+        self._emit(Event(type=EventType.LLM_RESPONSE , data={"message": message}, step_index=state.step_count))
 
-        message = response.choices[0].message
         state.steps.append(Step(index=state.step_count, kind=StepKind.LLM_CALL,
              output=message.model_dump() if hasattr(message, "model_dump") else dict(message),
-             duration_ms=(time.perf_counter() - t0) * 1000,))
+             duration_ms=duration_ms))
         state.step_count += 1
 
         if message.tool_calls:
@@ -175,3 +177,67 @@ class Runtime:
         state.error = error
         state.error_source = source
 
+    def _get_llm_message(
+            self,
+            state: RuntimeState,
+            messages: list[dict],
+            schemas: list[dict] | None,
+    ):
+        if self._llm_stream is None:
+            response = self._llm_call(messages, schemas)
+            return response.choices[0].message
+
+        parts: list[str] = []
+
+        for chunk in self._llm_stream(messages, schemas):
+            if chunk.content:
+                parts.append(chunk.content)
+
+                self._emit(Event(
+                    type=EventType.LLM_TOKEN,
+                    data={"token": chunk.content},
+                    step_index=state.step_count,
+                ))
+
+            if chunk.finish_reason is not None:
+                text = "".join(parts) or None
+                tool_calls = chunk.tool_calls
+
+                if tool_calls:
+                    self._emit(Event(
+                        type=EventType.LLM_TOKEN,
+                        data={
+                            "token": None,
+                            "tool_calls": tool_calls,
+                        },
+                        step_index=state.step_count,
+                    ))
+
+                return self._stream_message(text=text, tool_calls=tool_calls)
+
+        raise LLMError(
+            "LLM stream ended without finish chunk"
+        )
+
+    @staticmethod
+    def _stream_message(text: str | None, tool_calls: list[dict] | None) -> SimpleNamespace:
+        """流式产物 → 鸭子 message（.content/.tool_calls/.model_dump() 对齐 SDK message）。"""
+        return SimpleNamespace(
+            content=text,
+            tool_calls=[
+                SimpleNamespace(
+                    id=tc["id"],
+                    type=tc["type"],
+                    function=SimpleNamespace(
+                        name=tc["function"]["name"],
+                        arguments=tc["function"]["arguments"],
+                    ),
+                )
+                for tc in tool_calls
+            ] if tool_calls else None,
+            model_dump=lambda: {
+                "role": "assistant",
+                "content": text,
+                "tool_calls": tool_calls,
+            },
+        )

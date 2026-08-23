@@ -11,6 +11,8 @@ class EventType(str, Enum):
     RUN_START = "run.start"
     LLM_REQUEST = "llm.request"
     LLM_RESPONSE = "llm.response"
+    LLM_TOKEN = "llm.token"
+    LLM_ERROR = "llm.error"
     # TOOL_REQUEST = "tool.request"
     TOOL_RESPONSE = "tool.response"
     RUN_FINISH = "run.finish"
@@ -25,3 +27,5 @@ class Event:
 
 EventHandler: TypeAlias = Callable[[Event], None]
 """定义EventHandler为一种函数类型: 参数类型Event, 无返回值"""
+
+

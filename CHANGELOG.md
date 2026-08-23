@@ -7,8 +7,10 @@
 
 ## [Unreleased]
 
+### Added
+- **Streaming 输出**（D22）：SSE token 流 + `LLM_TOKEN` 事件 + CLI 实时打字机；连接重试与中途异常分离
+
 ### Planned (Week 4)
-- Streaming 输出
 - 异步 Runtime
 - Planner / Reflection
 
