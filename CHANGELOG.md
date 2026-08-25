@@ -9,9 +9,12 @@
 
 ### Added
 - **Streaming 输出**（D22）：SSE token 流 + `LLM_TOKEN` 事件 + CLI 实时打字机；连接重试与中途异常分离
+- **异步架构**（D23）：`AsyncLLMClient`（async chat/stream）+ Executor 异步执行（gather + `asyncio.to_thread`）+ `Runtime.run_async` 全链路；CLI 打字机走异步路径
+
+### Fixed
+- 流式工具名重装改为覆盖语义：provider 每 fragment 重复携带 name 时不再指数翻倍
 
 ### Planned (Week 4)
-- 异步 Runtime
 - Planner / Reflection
 
 ## [0.3.0] - 2026-08-22

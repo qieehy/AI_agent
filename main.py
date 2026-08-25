@@ -1,8 +1,10 @@
+import asyncio
+
 from rich.console import Console
 from rich.markdown import Markdown
 from typer import Typer
 
-from llm import LLMClient
+from llm import AsyncLLMClient, LLMClient
 from memory import create_memory_manager
 from observability import logger, setup_logging
 from runtime import Event, EventType, Runtime
@@ -13,6 +15,7 @@ app = Typer()
 def chat(model: str | None = None):
     setup_logging()
     llm = LLMClient(model = model) if model else LLMClient()
+    async_llm = AsyncLLMClient(model = model) if model else AsyncLLMClient()
     registry = create_registry()
     memory_manager = create_memory_manager()
     executor = Executor(registry, mode="parallel")
@@ -37,14 +40,19 @@ def chat(model: str | None = None):
     runtime = Runtime(
         llm_call=llm,
         llm_stream=llm.stream,
+        llm_call_async=async_llm,
+        llm_stream_async=async_llm.stream,
         tool_executor=executor,
         memory_manager=memory_manager,
         handlers=[on_llm_event],
     )
-    session_id = None
+    asyncio.run(_repl(runtime=runtime, memory_manager=memory_manager, executor=executor, console=console, streamed=streamed))
 
+
+async def _repl(runtime, memory_manager, executor, console, streamed)-> None:
+    session_id = None
     while True:
-        q = input(">")
+        q = await asyncio.to_thread(console.input, ">")
 
         if q == "/q":
             break
@@ -72,7 +80,7 @@ def chat(model: str | None = None):
             continue
 
         streamed[0] = False
-        state = runtime.run(q, session_id=session_id)
+        state = await runtime.run_async(q, session_id=session_id)
         session_id = state.session_id
         if state.status.value == "failed":
             err = state.error_info or {}
@@ -82,8 +90,6 @@ def chat(model: str | None = None):
         else:
             last = memory_manager.get_or_create(session_id).messages[-1]
             console.print(Markdown(last.get("content", "[no content]") if last else "[no content]"))
-
-
 
 if __name__ == "__main__":
     app()

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,11 +41,35 @@ class Executor:
             return self._execute_serial(tool_calls)
         return self._execute_parallel(tool_calls)
 
+
+    async def execute_calls_async(self, tool_calls: list[Any]) -> list[ToolResult]:
+        """async 路径走默认线程池，max_workers 仅约束 sync parallel"""
+        if not tool_calls:
+            return []
+
+        if self._mode == "serial":
+            results = []
+            for tc in tool_calls:
+                result = await asyncio.to_thread(self._run_one, tc)
+                results.append(result)
+            return results
+
+        return list(
+                await asyncio.gather(
+                    *(
+                        asyncio.to_thread(self._run_one, tc)
+                        for tc in tool_calls
+                    )
+                    )
+                )
+
+
     def _execute_serial(self, tool_calls: list[Any]) -> list[ToolResult]:
         results: list[ToolResult] = []
         for tc in tool_calls:
             results.append(self._run_one(tc))
         return results
+
 
     def _execute_parallel(self, tool_calls: list[Any]) -> list[ToolResult]:
         indexed: list[tuple[int, ToolResult]] = []
@@ -56,9 +81,6 @@ class Executor:
                 indexed.append((idx, res))
         indexed.sort(key = lambda x: x[0])
         return [r for _ , r in indexed]
-
-
-
 
 
     def _run_one(self, tool_call: Any) -> ToolResult:

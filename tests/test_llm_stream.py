@@ -28,7 +28,7 @@ def _chunk(content=None, tool_calls=None, finish_reason=None):
 
 
 def _tc_frag(index, *, call_id=None, name=None, arguments=None):
-    """构造一个 tool_call 碎片（真实 SDK 中 name/arguments 是分片拼接的）。"""
+    """构造一个 tool_call 碎片（真实 SDK：name 每 fragment 重复完整值，arguments 分片）。"""
     return SimpleNamespace(
         index=index,
         id=call_id,
@@ -143,18 +143,19 @@ def test_create_receives_stream_true_model_messages_tools():
 # ---------- tool_call 重组 ----------
 
 def test_tool_calls_reassembled_by_index_across_fragments():
-    """工具碎片按 index 归位、name/arguments 拼接、id 取一次；与 content 交错不影响。"""
+    """工具碎片按 index 归位；name 每 fragment 重复携带（覆盖语义，不得累加翻倍）；
+    arguments 分片拼接；id 取一次；与 content 交错不影响。"""
     with patch("llm.client.OpenAI") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = _stream_of(
-            _chunk(tool_calls=[_tc_frag(0, call_id="call_1", name="get_")]),
+            _chunk(tool_calls=[_tc_frag(0, call_id="call_1", name="get_weather")]),
             _chunk(content="查到了"),
             _chunk(tool_calls=[
                 _tc_frag(1, call_id="call_2", name="calc"),
-                _tc_frag(0, name="weather", arguments='{"ci'),
+                _tc_frag(0, name="get_weather", arguments='{"ci'),
             ]),
             _chunk(tool_calls=[
-                _tc_frag(0, arguments='ty": "上海"}'),
-                _tc_frag(1, arguments='{"expr": "1+2"}'),
+                _tc_frag(0, name="get_weather", arguments='ty": "上海"}'),
+                _tc_frag(1, name="calc", arguments='{"expr": "1+2"}'),
             ]),
             _chunk(finish_reason="tool_calls"),
         )

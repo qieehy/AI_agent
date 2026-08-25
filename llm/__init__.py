@@ -1,1 +1,3 @@
-from .client import LLMClient as LLMClient
+from .client import AsyncLLMClient, LLMClient
+
+__all__ = ["LLMClient", "AsyncLLMClient"]
