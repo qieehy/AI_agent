@@ -1,7 +1,6 @@
 import asyncio
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -19,10 +18,10 @@ class ToolResult:
     duration_ms: float = 0.0
 
 class Executor:
-    """tool_call执行器
+    """tool_call执行器（D24 起仅异步执行路径）
      职责：
       - 决定怎么跑（serial / parallel）
-      - 把 ToolManager.execute 的 raise 转成 ToolResult
+      - 把工具执行中的 raise 转成 ToolResult
       - 永远不抛异常（除非程序错误，如 TypeError）
     """
     def __init__(self, registry: ToolRegistry, mode: ExecutionMode="parallel", max_workers: int = 4):
@@ -34,53 +33,26 @@ class Executor:
          return self._registry.get_schemas()
 
 
-    def execute_calls(self, tool_calls: list[Any]) -> list[ToolResult]:
-        if not tool_calls:
-            return []
-        if self._mode == "serial":
-            return self._execute_serial(tool_calls)
-        return self._execute_parallel(tool_calls)
-
-
     async def execute_calls_async(self, tool_calls: list[Any]) -> list[ToolResult]:
-        """async 路径走默认线程池，max_workers 仅约束 sync parallel"""
+        """阻塞型工具经 asyncio.to_thread 卸货到工作线程，不堵事件循环。
+
+        parallel 模式用每次调用独立的 Semaphore(max_workers) 限流：
+        Executor 实例跨会话共享，实例级信号量会把不同会话的工具执行
+        互相串起来；每次调用独立信号量只约束单批内的并发度。
+        """
         if not tool_calls:
             return []
 
         if self._mode == "serial":
-            results = []
-            for tc in tool_calls:
-                result = await asyncio.to_thread(self._run_one, tc)
-                results.append(result)
-            return results
+            return [await asyncio.to_thread(self._run_one, tc) for tc in tool_calls]
 
-        return list(
-                await asyncio.gather(
-                    *(
-                        asyncio.to_thread(self._run_one, tc)
-                        for tc in tool_calls
-                    )
-                    )
-                )
+        sem = asyncio.Semaphore(self._max_workers)
 
+        async def _bounded(tc):
+            async with sem:
+                return await asyncio.to_thread(self._run_one, tc)
 
-    def _execute_serial(self, tool_calls: list[Any]) -> list[ToolResult]:
-        results: list[ToolResult] = []
-        for tc in tool_calls:
-            results.append(self._run_one(tc))
-        return results
-
-
-    def _execute_parallel(self, tool_calls: list[Any]) -> list[ToolResult]:
-        indexed: list[tuple[int, ToolResult]] = []
-        with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
-            futures = {pool.submit(self._run_one, tc): i for i, tc in enumerate(tool_calls)}
-            for fut in as_completed(futures):
-                idx = futures[fut]
-                res = fut.result()
-                indexed.append((idx, res))
-        indexed.sort(key = lambda x: x[0])
-        return [r for _ , r in indexed]
+        return list(await asyncio.gather(*(_bounded(tc) for tc in tool_calls)))
 
 
     def _run_one(self, tool_call: Any) -> ToolResult:

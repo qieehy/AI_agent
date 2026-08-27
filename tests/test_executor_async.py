@@ -206,3 +206,85 @@ async def test_async_executor_does_not_block_event_loop():
 
     assert results[0].status == "success"
     assert events == ["tick", "tool-done"]
+
+
+# ---------- 移植自 test_tool_registry.py（sync 执行器删除后保留的独有覆盖） ----------
+
+@pytest.mark.anyio
+async def test_async_executor_tool_disabled():
+    """tool 被 disable → ToolResult failed。"""
+    registry = ToolRegistry()
+
+    @registry.register
+    def add(a, b):
+        return a + b
+
+    registry.disable("add")
+    results = await Executor(registry).execute_calls_async([_make_tool_call("add", '{"a": 1, "b": 2}')])
+
+    assert results[0].status == "failed"
+
+
+@pytest.mark.anyio
+async def test_async_executor_serial_preserves_order():
+    """serial 模式：多 tool_calls 按顺序执行，结果保序。"""
+    registry = ToolRegistry()
+
+    @registry.register
+    def add(a, b):
+        return a + b
+
+    @registry.register
+    def multiply(a, b):
+        return a * b
+
+    tcs = [
+        _make_tool_call("add", '{"a": 1, "b": 2}'),
+        _make_tool_call("multiply", '{"a": 3, "b": 4}'),
+    ]
+    results = await Executor(registry, mode="serial").execute_calls_async(tcs)
+
+    assert [r.content for r in results] == ["3", "12"]
+
+
+@pytest.mark.anyio
+async def test_async_executor_get_schemas_forwards():
+    """get_schemas 转发到 registry：disable 后返回空。"""
+    registry = ToolRegistry()
+
+    @registry.register
+    def add(a, b):
+        return a + b
+
+    registry.disable("add")
+    executor = Executor(registry)
+
+    assert executor.get_schemas() == []
+
+
+# ---------- max_workers 限流（D24：sync 执行路径删除后，Semaphore 约束 async 并发度） ----------
+
+@pytest.mark.anyio
+async def test_async_executor_max_workers_bounds_parallelism():
+    """parallel + max_workers=2：4 个 0.2s 工具 → 两波完成，总时长 >= 0.35s。
+
+    若不限流（一次 gather 全部），一波 0.2s 跑完，此测试必红。
+    """
+    registry = ToolRegistry()
+
+    for name in ("slow_a", "slow_b", "slow_c", "slow_d"):
+        def _slow() -> str:
+            time.sleep(0.2)
+            return "done"
+
+        _slow.__name__ = name
+        registry.register(_slow)
+
+    tcs = [_make_tool_call(name, "{}") for name in ("slow_a", "slow_b", "slow_c", "slow_d")]
+    t0 = time.perf_counter()
+    results = await Executor(registry, mode="parallel", max_workers=2).execute_calls_async(tcs)
+    elapsed = time.perf_counter() - t0
+
+    assert len(results) == 4
+    assert all(r.status == "success" for r in results)
+    assert elapsed >= 0.35

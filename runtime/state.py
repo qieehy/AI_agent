@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any
 
 from .step import Step
+from .stop_reason import StopReason
 
 
 class RunStatus(str, Enum):
@@ -12,9 +13,11 @@ class RunStatus(str, Enum):
     RUNNING = "running"
     AWAITING_TOOL = "awaiting_tool"
     FINISHED = "finished"
+    MAX_STEPS = "max_steps"
+    LOOP_DETECTED = "loop_detected"
+    VALIDATION_FAILED = "validation_failed"
     FAILED = "failed"
     CANCELED = "canceled"
-    MAX_STEP = "max_step"
 
 @dataclass
 class RuntimeState:
@@ -22,12 +25,25 @@ class RuntimeState:
     status: RunStatus = RunStatus.PENDING
     steps: list[Step] = field(default_factory=list)
     messages:list[dict[str,Any]] = field(default_factory=list)
+    tool_call_history: list[Any] = field(default_factory=list)
     step_count: int = 0
-    max_steps: int = 100
+    stop_reason: StopReason | None = None
+    # 连续失败轮数预算（feedback rounds 计数，成功一轮即清零）：
+    # validation_failure_rounds = 连续出现非法 tool_call 的轮数
+    # tool_error_rounds = 连续整轮工具全败的轮数
+    validation_failure_rounds: int = 0
+    tool_error_rounds: int = 0
     error: Exception | None = None
     error_source: str | None = None
     error_info: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_terminal(self) -> bool:
-        return self.status in (RunStatus.FINISHED, RunStatus.FAILED, RunStatus.CANCELED, RunStatus.MAX_STEP)
+        return self.status in (
+            RunStatus.FINISHED,
+            RunStatus.FAILED,
+            RunStatus.CANCELED,
+            RunStatus.MAX_STEPS,
+            RunStatus.LOOP_DETECTED,
+            RunStatus.VALIDATION_FAILED,
+        )

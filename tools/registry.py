@@ -140,7 +140,12 @@ class ToolRegistry:
 
         if origin is Literal:
             values = get_args(anno)
-            return { "type": "string", "enum": list(values)}
+            json_types = [ToolRegistry._json_type(v) for v in values]
+            json_types = list(dict.fromkeys(json_types))
+            return {
+                "type": json_types[0] if len(json_types) == 1 else json_types,
+                "enum": list(values),
+            }
 
         if origin is list:
             item_type = get_args(anno)[0]
@@ -151,12 +156,37 @@ class ToolRegistry:
 
         if origin in (UnionType, Union):
             args = get_args(anno)
-            if NoneType in args:
-                inner = [a for a in args if a is not NoneType][0]
-                result = ToolRegistry._py_to_json(inner)
-                result["nullable"] = True
-                return result
+            non_none = [a for a in args if a is not NoneType]
+            if non_none:
+                return ToolRegistry._nullable(
+                    ToolRegistry._py_to_json(a) for a in non_none
+                )
         return { "type": "string"}
+
+    @staticmethod
+    def _json_type(value: Any) -> str:
+        """Python 字面量值 → JSON Schema type（None → 'null'）。"""
+        if value is None:
+            return "null"
+        return {
+            int: "integer", float: "number",
+            str: "string", bool: "boolean",
+        }.get(type(value), "string")
+
+    @staticmethod
+    def _nullable(schemas) -> dict:
+        """合并一组非空类型为可空联合 type。
+
+        Draft202012 忽略 'nullable' 扩展键，必须用
+        {"type": ["<inner>", "null"]} 表达可空，否则 Optional 参数
+        显式传 null 会被误判为 schema_validation_failed。
+        """
+        merged: list[Any] = []
+        for schema in schemas:
+            t = schema.get("type")
+            merged.extend([t] if isinstance(t, str) else t)
+        merged = list(dict.fromkeys(merged)) + ["null"]
+        return {"type": merged}
 
     @staticmethod
     def _is_optional(anno) -> bool:

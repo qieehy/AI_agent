@@ -2,6 +2,7 @@ from . import calculator  # 让注册可见
 from .builtin import file_tools, network_tools, shell_tools
 from .executor import ExecutionMode, Executor, ToolResult
 from .registry import Tool, ToolRegistry
+from .validator import ToolCallValidator
 
 
 def create_registry() -> ToolRegistry:
@@ -15,6 +16,6 @@ def create_registry() -> ToolRegistry:
 
 __all__ = [
   "ToolRegistry", "Tool",
-  "ExecutionMode", "Executor", "ToolResult",
+  "ExecutionMode", "Executor", "ToolResult", "ToolCallValidator",
   "create_registry",   # ← 工厂函数
 ]

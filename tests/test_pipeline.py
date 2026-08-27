@@ -57,9 +57,9 @@ class FakeVectorStore:
 
 @pytest.fixture
 def env(mocker):
-    """FakeVectorStore + fake embedder + mock LLM。"""
+    """FakeVectorStore + fake embedder + async mock LLM（D24: ask 已是 async）。"""
     store = FakeVectorStore()
-    llm = mocker.Mock()
+    llm = mocker.AsyncMock()
     llm.chat.return_value = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content="标准答案[1]"))]
     )
@@ -146,24 +146,26 @@ def test_chunk_metadata_carries_source_page_text(env, monkeypatch):
     assert {h.id for h in hits} == {"report.pdf:1:0", "report.pdf:2:0"}
 
 
-# ---------- ask ----------
+# ---------- ask（D24: ask 已是 async，全部 await） ----------
 
-def test_ask_returns_llm_text(env, monkeypatch):
+@pytest.mark.anyio
+async def test_ask_returns_llm_text(env, monkeypatch):
     """LLM 的 content 原样进入 Answer.text，sources 非空。"""
     _patch_pdf(monkeypatch, ["知识库正文"])
     env.pipeline.index_pdf("doc.pdf")
 
-    answer = env.pipeline.ask("问题？")
+    answer = await env.pipeline.ask("问题？")
     assert answer.text == "标准答案[1]"
     assert len(answer.sources) == 1
 
 
-def test_ask_prompt_contains_numbered_context_and_question(env, monkeypatch):
+@pytest.mark.anyio
+async def test_ask_prompt_contains_numbered_context_and_question(env, monkeypatch):
     """prompt 必须携带编号上下文 + 问题；system 含引用指令。"""
     _patch_pdf(monkeypatch, ["知识库正文"])
     env.pipeline.index_pdf("doc.pdf")
 
-    env.pipeline.ask("核心问题？")
+    await env.pipeline.ask("核心问题？")
 
     messages = env.llm.chat.call_args.args[0]
     system, user = messages[0]["content"], messages[1]["content"]
@@ -173,15 +175,17 @@ def test_ask_prompt_contains_numbered_context_and_question(env, monkeypatch):
     assert "核心问题？" in user
 
 
-def test_ask_returns_hint_when_store_empty(env):
+@pytest.mark.anyio
+async def test_ask_returns_hint_when_store_empty(env):
     """空库：提示语 + 空 sources，且不调 LLM。"""
-    answer = env.pipeline.ask("问题？")
+    answer = await env.pipeline.ask("问题？")
     assert answer.text == "知识库中没有找到相关内容"
     assert answer.sources == []
     env.llm.chat.assert_not_called()
 
 
-def test_ask_returns_empty_string_when_content_none(env, monkeypatch):
+@pytest.mark.anyio
+async def test_ask_returns_empty_string_when_content_none(env, monkeypatch):
     """API 安全过滤返回 content=None：text 回退空串，sources 不受影响（检索先于生成）。"""
     _patch_pdf(monkeypatch, ["知识库正文"])
     env.pipeline.index_pdf("doc.pdf")
@@ -189,17 +193,18 @@ def test_ask_returns_empty_string_when_content_none(env, monkeypatch):
         choices=[SimpleNamespace(message=SimpleNamespace(content=None))]
     )
 
-    answer = env.pipeline.ask("问题？")
+    answer = await env.pipeline.ask("问题？")
     assert answer.text == ""
     assert len(answer.sources) == 1
 
 
-def test_ask_sources_numbered_from_one_with_hit_data(env, monkeypatch):
+@pytest.mark.anyio
+async def test_ask_sources_numbered_from_one_with_hit_data(env, monkeypatch):
     """citation 核心契约：number 从 1 递增，id/score/元数据来自命中的块。"""
     _patch_pdf(monkeypatch, ["第一页内容", "第二页内容"])
     env.pipeline.index_pdf("doc.pdf")
 
-    answer = env.pipeline.ask("问题？", top_k=5)
+    answer = await env.pipeline.ask("问题？", top_k=5)
 
     assert [s.number for s in answer.sources] == [1, 2]
     assert [s.id for s in answer.sources] == ["doc.pdf:1:0", "doc.pdf:2:0"]
@@ -209,12 +214,13 @@ def test_ask_sources_numbered_from_one_with_hit_data(env, monkeypatch):
     assert answer.sources[0].score == 1.0
 
 
-def test_ask_sources_numbering_matches_prompt_context(env, monkeypatch):
+@pytest.mark.anyio
+async def test_ask_sources_numbering_matches_prompt_context(env, monkeypatch):
     """prompt 里 [n] 的编号与 Answer.sources 的 number 一一对应（同一次检索同一编号）。"""
     _patch_pdf(monkeypatch, ["第一页内容", "第二页内容"])
     env.pipeline.index_pdf("doc.pdf")
 
-    answer = env.pipeline.ask("问题？", top_k=5)
+    answer = await env.pipeline.ask("问题？", top_k=5)
 
     user = env.llm.chat.call_args.args[0][1]["content"]
     for source in answer.sources:
@@ -245,7 +251,8 @@ def test_reindex_removes_old_chunks_from_keyword_index(hybrid_env, monkeypatch):
     assert hybrid_env.keyword_index.search("数据库", top_k=50) == []
 
 
-def test_ask_fuses_keyword_hits_into_context(hybrid_env, monkeypatch):
+@pytest.mark.anyio
+async def test_ask_fuses_keyword_hits_into_context(hybrid_env, monkeypatch):
     """dense 路漏掉的块，keyword 路命中后必须进入 prompt 上下文。"""
     _patch_pdf(monkeypatch, ["数据库是核心", "完全不相关"])
     hybrid_env.pipeline.index_pdf("doc.pdf")
@@ -260,7 +267,7 @@ def test_ask_fuses_keyword_hits_into_context(hybrid_env, monkeypatch):
         ],
     )
 
-    hybrid_env.pipeline.ask("数据库", top_k=3)
+    await hybrid_env.pipeline.ask("数据库", top_k=3)
 
     user = hybrid_env.llm.chat.call_args.args[0][1]["content"]
     assert "数据库是核心" in user  # keyword 路补上 dense 漏掉的块
@@ -269,46 +276,50 @@ def test_ask_fuses_keyword_hits_into_context(hybrid_env, monkeypatch):
 
 # ---------- rerank ----------
 
-def test_ask_two_stage_fetch_more_than_top_k(rerank_env, monkeypatch, mocker):
+@pytest.mark.anyio
+async def test_ask_two_stage_fetch_more_than_top_k(rerank_env, monkeypatch, mocker):
     """两段式：召回段按 fetch_k 取候选（> top_k），精排段截到 top_k。"""
     _patch_pdf(monkeypatch, ["第一页", "第二页"])
     rerank_env.pipeline.index_pdf("doc.pdf")
 
     spy = mocker.spy(rerank_env.store, "search")
-    rerank_env.pipeline.ask("问题？", top_k=1, fetch_k=5)
+    await rerank_env.pipeline.ask("问题？", top_k=1, fetch_k=5)
 
     assert spy.call_args.args[1] == 5  # 召回段用 fetch_k 而不是 top_k
 
 
-def test_ask_reranked_order_reaches_prompt(rerank_env, monkeypatch):
+@pytest.mark.anyio
+async def test_ask_reranked_order_reaches_prompt(rerank_env, monkeypatch):
     """prompt 上下文顺序 = reranker 精排后的顺序（FakeReranker 按长度降序）。"""
     _patch_pdf(monkeypatch, ["短", "这段文本明显更长"])
     rerank_env.pipeline.index_pdf("doc.pdf")
 
-    rerank_env.pipeline.ask("问题？", top_k=2, fetch_k=5)
+    await rerank_env.pipeline.ask("问题？", top_k=2, fetch_k=5)
 
     user = rerank_env.llm.chat.call_args.args[0][1]["content"]
     assert user.index("这段文本明显更长") < user.index("短")
 
 
-def test_reranker_receives_fetch_candidates_and_top_k(rerank_env, monkeypatch, mocker):
+@pytest.mark.anyio
+async def test_reranker_receives_fetch_candidates_and_top_k(rerank_env, monkeypatch, mocker):
     """reranker 收到召回段的全量候选，并被要求截到 top_k。"""
     _patch_pdf(monkeypatch, ["第一页", "第二页"])
     rerank_env.pipeline.index_pdf("doc.pdf")
 
     spy = mocker.spy(rerank_env.reranker, "rerank")
-    rerank_env.pipeline.ask("问题？", top_k=1, fetch_k=5)
+    await rerank_env.pipeline.ask("问题？", top_k=1, fetch_k=5)
 
     assert len(spy.call_args.args[1]) == 2  # 库里共 2 块，全量候选
     assert spy.call_args.args[2] == 1  # 精排目标 top_k
 
 
-def test_ask_without_reranker_fetches_top_k(env, monkeypatch, mocker):
+@pytest.mark.anyio
+async def test_ask_without_reranker_fetches_top_k(env, monkeypatch, mocker):
     """无 reranker：fetch 退化为 top_k（旧行为不变）。"""
     _patch_pdf(monkeypatch, ["第一页", "第二页"])
     env.pipeline.index_pdf("doc.pdf")
 
     spy = mocker.spy(env.store, "search")
-    env.pipeline.ask("问题？", top_k=3)
+    await env.pipeline.ask("问题？", top_k=3)
 
     assert spy.call_args.args[1] == 3

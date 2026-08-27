@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from llm import LLMClient
+from llm import AsyncLLMClient
 
 from .chunking import Chunk, chunk_text
 from .embeddings import EmbeddingService
@@ -40,7 +40,7 @@ class RAGPipeline:
     （先读旧账删除，成功后写新账）。
     """
 
-    def __init__(self, embedding_service: EmbeddingService, vector_store: VectorStore, llm_client: LLMClient,
+    def __init__(self, embedding_service: EmbeddingService, vector_store: VectorStore, llm_client: AsyncLLMClient,
                  keyword_index: BM25Index | None = None, reranker: Reranker | None = None,
                  chunk_size=500, overlap=100):
         self.embedding_service = embedding_service
@@ -120,7 +120,7 @@ class RAGPipeline:
 
         return len(chunks)
 
-    def ask(self, question: str, top_k: int = 3, fetch_k=None) -> Answer:
+    async def ask(self, question: str, top_k: int = 3, fetch_k=None) -> Answer:
         """两段式检索 + 生成：召回 fetch 个候选，精排到 top_k，编号拼入 user 消息。
 
         - 召回段：dense 向量检索（+ 可选 BM25 关键词，RRF 融合），各取 fetch 个
@@ -175,7 +175,7 @@ class RAGPipeline:
         """
             }
         ]
-        response = self.llm_client.chat(messages)
+        response = await self.llm_client.chat(messages)
         answer = Answer(text=response.choices[0].message.content or "", sources=sources)
         return answer
 

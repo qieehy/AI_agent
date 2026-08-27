@@ -4,21 +4,32 @@ from rich.console import Console
 from rich.markdown import Markdown
 from typer import Typer
 
-from llm import AsyncLLMClient, LLMClient
+from config import get_settings
+from llm import AsyncLLMClient
 from memory import create_memory_manager
 from observability import logger, setup_logging
-from runtime import Event, EventType, Runtime
-from tools import Executor, create_registry
+from prompts import create_agent_profile
+from prompts.base import PromptContext
+from runtime import Event, EventType, LoopGuard, Runtime
+from tools import Executor, ToolCallValidator, create_registry
 
 app = Typer()
 @app.command()
-def chat(model: str | None = None):
+def chat(model: str | None = None, pattern: str | None = None):
+    """CLI 聊天。--pattern 覆盖 .env 的 settings.pattern（D24: Prompt 可配置）。"""
     setup_logging()
-    llm = LLMClient(model = model) if model else LLMClient()
     async_llm = AsyncLLMClient(model = model) if model else AsyncLLMClient()
     registry = create_registry()
     memory_manager = create_memory_manager()
     executor = Executor(registry, mode="parallel")
+
+    # 组合根：AgentProfile = 提示模式 + 循环策略，一次工厂调用全部就位
+    profile = create_agent_profile(pattern or get_settings().pattern)
+    system_message = profile.pattern.build(
+        PromptContext(tool_schemas=tuple(executor.get_schemas()))
+    )
+    loop_guard = LoopGuard(profile.loop_policy)
+    validator = ToolCallValidator(executor.get_schemas())
 
     console = Console()
     streamed = [False]
@@ -38,13 +49,14 @@ def chat(model: str | None = None):
             console.print(f"\n[dim]🔧 调用工具: {', '.join(names)}[/dim]")
 
     runtime = Runtime(
-        llm_call=llm,
-        llm_stream=llm.stream,
         llm_call_async=async_llm,
         llm_stream_async=async_llm.stream,
         tool_executor=executor,
         memory_manager=memory_manager,
         handlers=[on_llm_event],
+        loop_guard=loop_guard,
+        validator=validator,
+        system_prompt=system_message.content,
     )
     asyncio.run(_repl(runtime=runtime, memory_manager=memory_manager, executor=executor, console=console, streamed=streamed))
 

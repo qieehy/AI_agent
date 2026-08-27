@@ -1,3 +1,3 @@
-from .client import AsyncLLMClient, LLMClient
+from .client import AsyncLLMClient
 
-__all__ = ["LLMClient", "AsyncLLMClient"]
+__all__ = ["AsyncLLMClient"]

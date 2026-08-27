@@ -9,9 +9,10 @@
 回答中的 [编号] 是 LLM 引用的上下文块，对应的来源脚注打印在下方（D21 citation）。
 来源里的 score 是精排分（logits，只有相对大小有意义）。
 """
+import asyncio
 import sys
 
-from llm import LLMClient
+from llm import AsyncLLMClient
 from rag import (
     BM25Index,
     create_embedding_service,
@@ -33,7 +34,7 @@ def main() -> None:
     # 组合根：embedder / store / llm 互不知晓，pipeline 只认识接口
     embedding_service = create_embedding_service()
     vector_store = create_vector_store()
-    llm_client = LLMClient()
+    llm_client = AsyncLLMClient()
     pipeline = create_rag_pipeline(
         embedding_service,
         vector_store,
@@ -56,7 +57,7 @@ def main() -> None:
             continue
         if question == "/quit":
             break
-        answer = pipeline.ask(question)
+        answer = asyncio.run(pipeline.ask(question))
         print(f"答: {answer.text}")
 
         # 来源脚注：[n] 与 LLM 回答里的引用编号一一对应

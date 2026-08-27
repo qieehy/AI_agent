@@ -1,35 +1,16 @@
-"""测试 tools/registry.py + tools/executor.py 的 SRP 拆分。
-
-策略：
-- 单独测 ToolRegistry：注册 / 禁用 / schemas
-- 单独测 Executor：通过 registry.get_tool() 拿 tool 直接执行
-- 测 5 类错误：tool 不存在 / JSON 错 / 执行错 / 空列表 / 多 tool 批量
+"""测试 tools/registry.py 的注册 / 禁用 / schemas（SRP：Executor 契约见 test_executor_async.py）。
 
 注意：
 - ToolRegistry 只管注册（不执行）—— 测 register / disable / schemas
-- Executor 只管执行（不注册）—— 测 execute_calls / ToolResult
-- Executor 永远不抛异常——所有失败都转成 ToolResult(status="failed")
+- Executor 测试（execute_calls_async / ToolResult）在 tests/test_executor_async.py
 """
 from __future__ import annotations
 
-import time
 from typing import Annotated, Literal
-from unittest.mock import MagicMock
 
 import pytest
 
-from tools.executor import Executor
 from tools.registry import ToolRegistry
-
-# ---------- 辅助函数 ----------
-
-def _make_tool_call(name: str, arguments: str) -> MagicMock:
-    """构造假的 tool_call 对象（OpenAI 风格）。"""
-    tc = MagicMock()
-    tc.function.name = name
-    tc.function.arguments = arguments
-    return tc
-
 
 # ---------- ToolRegistry 测试 ----------
 
@@ -125,185 +106,6 @@ def test_registry_get_tool_returns_tool():
     assert tool.func(1, 2) == 3
 
 
-# ---------- Executor 测试 ----------
-
-def test_executor_empty_list():
-    """空 tool_calls → 空结果。"""
-    registry = ToolRegistry()
-    executor = Executor(registry)
-    assert executor.execute_calls([]) == []
-
-
-def test_executor_success():
-    """正常路径：注册 + 调 + 成功 → status="success" + content 是结果。"""
-    registry = ToolRegistry()
-
-    @registry.register
-    def add(a: int, b: int) -> int:
-        """Add."""
-        return a + b
-
-    executor = Executor(registry)
-    tc = _make_tool_call("add", '{"a": 1, "b": 2}')
-    results = executor.execute_calls([tc])
-
-    assert len(results) == 1
-    assert results[0].status == "success"
-    assert results[0].content == "3"   # D15: executor 序列化非 str 返回值
-    assert results[0].error is None
-
-
-def test_executor_tool_not_registered():
-    """tool 不存在 → ToolResult failed，不抛异常。"""
-    registry = ToolRegistry()
-    executor = Executor(registry)
-
-    tc = _make_tool_call("not_exist", "{}")
-    results = executor.execute_calls([tc])
-
-    assert len(results) == 1
-    assert results[0].status == "failed"
-    assert "not registered" in results[0].error.lower()
-    assert results[0].error_type == "ToolError"
-    assert results[0].content is None
-
-
-def test_executor_tool_disabled():
-    """tool 被 disable → ToolResult failed。"""
-    registry = ToolRegistry()
-
-    @registry.register
-    def add(a, b):
-        return a + b
-
-    registry.disable("add")
-    executor = Executor(registry)
-
-    tc = _make_tool_call("add", '{"a": 1, "b": 2}')
-    results = executor.execute_calls([tc])
-
-    assert results[0].status == "failed"
-
-
-def test_executor_invalid_json():
-    """JSON 解析失败 → ToolResult failed + error 含 "json"。"""
-    registry = ToolRegistry()
-
-    @registry.register
-    def add(a, b):
-        return a + b
-
-    executor = Executor(registry)
-    tc = _make_tool_call("add", "this is not json {")
-    results = executor.execute_calls([tc])
-
-    assert results[0].status == "failed"
-    assert "json" in results[0].error.lower()
-
-
-def test_executor_execution_error():
-    """工具执行抛异常（ZeroDivisionError）→ ToolResult failed + error_type。"""
-    registry = ToolRegistry()
-
-    @registry.register
-    def divide(a, b):
-        return a / b
-
-    executor = Executor(registry)
-    tc = _make_tool_call("divide", '{"a": 10, "b": 0}')
-    results = executor.execute_calls([tc])
-
-    assert results[0].status == "failed"
-    assert results[0].error_type == "ZeroDivisionError"
-
-
-def test_executor_batch_serial():
-    """serial 模式：多 tool_calls 按顺序执行，结果保序。"""
-    registry = ToolRegistry()
-
-    @registry.register
-    def add(a, b):
-        return a + b
-
-    @registry.register
-    def multiply(a, b):
-        return a * b
-
-    executor = Executor(registry, mode="serial")
-    tcs = [
-        _make_tool_call("add", '{"a": 1, "b": 2}'),
-        _make_tool_call("multiply", '{"a": 3, "b": 4}'),
-    ]
-    results = executor.execute_calls(tcs)
-
-    assert len(results) == 2
-    assert results[0].content == "3"   # add(1,2) = 3, 序列化为 "3"
-    assert results[1].content == "12"  # multiply(3,4) = 12
-
-
-def test_executor_batch_parallel_preserves_order():
-    """parallel 模式：完成顺序无关，但返回结果按输入顺序。"""
-    registry = ToolRegistry()
-
-    @registry.register
-    def slow(x: int) -> int:
-        """Slow tool."""
-        time.sleep(0.05)
-        return x * 2
-
-    @registry.register
-    def fast(x: int) -> int:
-        """Fast tool."""
-        return x + 100
-
-    executor = Executor(registry, mode="parallel", max_workers=2)
-    tcs = [
-        _make_tool_call("slow", '{"x": 1}'),     # 应返回 2
-        _make_tool_call("fast", '{"x": 2}'),     # 应返回 102
-    ]
-    results = executor.execute_calls(tcs)
-
-    # 即使 fast 先完成，结果顺序仍是 [slow, fast]
-    assert results[0].content == "2"
-    assert results[1].content == "102"
-
-
-def test_executor_batch_partial_failure():
-    """批量：1 成功 + 1 失败 → 各自 status。"""
-    registry = ToolRegistry()
-
-    @registry.register
-    def add(a, b):
-        return a + b
-
-    # 不注册 "sub" —— 它会失败
-    executor = Executor(registry)
-    tcs = [
-        _make_tool_call("add", '{"a": 1, "b": 2}'),
-        _make_tool_call("sub", '{}'),
-    ]
-    results = executor.execute_calls(tcs)
-
-    assert results[0].status == "success"
-    assert results[0].content == "3"
-    assert results[1].status == "failed"
-
-
-def test_executor_get_schemas_forwards():
-    """Executor.get_schemas 转发到 registry.get_schemas。"""
-    registry = ToolRegistry()
-
-    @registry.register
-    def add(a, b):
-        return a + b
-
-    registry.disable("add")
-    executor = Executor(registry)
-
-    # disable 后 Executor.get_schemas 也应该返回空
-    assert executor.get_schemas() == []
-
-
 # ---------- D5: _generate_schema 类型增强 ----------
 
 
@@ -322,7 +124,7 @@ def test_schema_list_str_items():
 
 
 def test_schema_optional_not_required():
-    """Optional[str] → nullable + 不在 required。"""
+    """Optional[str] → type: ["string", "null"]（Draft202012 联合 type）+ 不在 required。"""
     registry = ToolRegistry()
 
     @registry.register
@@ -333,7 +135,7 @@ def test_schema_optional_not_required():
     schema = registry.get_schemas()[0]
     params = schema["function"]["parameters"]
     assert "title" not in params["required"]
-    assert params["properties"]["title"] == {"type": "string", "nullable": True}
+    assert params["properties"]["title"] == {"type": ["string", "null"]}
 
 
 def test_schema_literal_enum():
@@ -348,6 +150,37 @@ def test_schema_literal_enum():
     schema = registry.get_schemas()[0]
     mode = schema["function"]["parameters"]["properties"]["mode"]
     assert mode == {"type": "string", "enum": ["fast", "slow"]}
+
+
+def test_schema_literal_int_enum():
+    """Literal[1, 2] → {"type": "integer", "enum": [1, 2]}（旧实现硬编码 string 不可满足）。"""
+    registry = ToolRegistry()
+
+    @registry.register
+    def pick(level: Literal[1, 2]) -> str:
+        """Pick."""
+        ...
+
+    schema = registry.get_schemas()[0]
+    level = schema["function"]["parameters"]["properties"]["level"]
+    assert level == {"type": "integer", "enum": [1, 2]}
+
+
+def test_schema_nullable_validates_against_null():
+    """Optional[str] 显式传 null → Draft202012 不再报 "None is not of type 'string'"。"""
+    from jsonschema import Draft202012Validator
+
+    registry = ToolRegistry()
+
+    @registry.register
+    def greet(name: str, title: str | None) -> str:
+        """Greet."""
+        ...
+
+    schema = registry.get_schemas()[0]
+    parameters = schema["function"]["parameters"]
+    errors = list(Draft202012Validator(parameters).iter_errors({"name": "hi", "title": None}))
+    assert errors == []
 
 
 def test_schema_annotated_description():
