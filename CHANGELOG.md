@@ -10,12 +10,20 @@
 ### Added
 - **Streaming 输出**（D22）：SSE token 流 + `LLM_TOKEN` 事件 + CLI 实时打字机；连接重试与中途异常分离
 - **异步架构**（D23）：`AsyncLLMClient`（async chat/stream）+ Executor 异步执行（gather + `asyncio.to_thread`）+ `Runtime.run_async` 全链路；CLI 打字机走异步路径
+- **Embedding 进程隔离**：Tool Router 通过持久 Worker 子进程执行本地 BGE；JSONL 协议、启动/推理/锁/关闭超时、取消清理、generation 恢复和 CLI 生命周期关闭均已接入生产 composition root
+- **Embedding Worker 可观测性**：父进程记录启动、READY、推理、超时、取消、协议失败、重启和关闭的结构化事件，并排除原始文本、向量、环境变量和 stderr 内容
+- **Planner Agent**（D26）：`plan_execute` 模式在执行前生成并验证结构化子任务 DAG；计划进入 Tool Router 和执行模型上下文，失败在路由与工具执行前关闭本次 Run
 
 ### Fixed
 - 流式工具名重装改为覆盖语义：provider 每 fragment 重复携带 name 时不再指数翻倍
 
+### Tests
+- 新增显式 opt-in 的真实 BGE Worker 集成验收，覆盖生产 composition root、READY、归一化向量、语义关系、进程复用和关闭清理
+- 新增 Embedding Worker 生命周期日志测试，覆盖成功、超时、generation 恢复、关闭和敏感载荷排除
+- 新增 Planner 数据模型、JSON 边界、DAG、配置、超时、取消、响应适配、Runtime 生命周期和生产组合根测试
+
 ### Planned (Week 4)
-- Planner / Reflection
+- Reflection
 
 ## [0.3.0] - 2026-08-22
 

@@ -12,15 +12,12 @@
                      main.py
                          ↓
                   Agent Runtime
-              ┌──────────┼──────────┐
-              ↓          ↓          ↓
-          LLMClient   Executor   EventBus
-          (重试/退避)  (串行/并行)  (Hook)
-              ↓          ↓
-         OpenAI API   ToolRegistry
-                      ↓
-                  calculator
-                      ...
+           ┌─────────┼──────────┬──────────┐
+           ↓         ↓          ↓          ↓
+      ToolRouter  LLMClient   Executor   EventBus
+      (BGE 检索)  (重试/退避)  (串/并行)   (Hook)
+           ↓         ↓          ↓
+      候选 schemas OpenAI API ToolRegistry
 ```
 
 ## 模块总览
@@ -29,7 +26,7 @@
 |---|---|---|
 | `runtime/` | `state.py` `step.py` `event.py` `runtime.py` | Agent 主循环：State → LLM → Tool → Event |
 | `llm/` | `client.py` | OpenAI 客户端：指数退避重试（最多 3 次） |
-| `tools/` | `registry.py` `executor.py` | Tool 注册表（完整 OpenAI Schema）+ 执行器（serial/parallel） |
+| `tools/` | `registry.py` `router.py` `executor.py` | Tool 注册、Embedding 候选检索与执行 |
 | `memory/` | `short_term.py` `token_counter.py` | BufferMemory 滑动窗口（4 条截断不变量） |
 | `errors/` | `exceptions.py` | AgentError → LLMError / ToolError / ConfigError / MemoryError |
 | `config/` | `settings.py` | pydantic-settings 配置中心 |
@@ -42,11 +39,11 @@ git clone <repo-url>
 cd AI_agent
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -e .
+pip install -e ".[rag]"
 
 # 配置
 cp .env.example .env
-# 编辑 .env，填入 API_KEY 和 BASE_URL
+# 编辑 .env，填入 API_KEY、BASE_URL；Tool Router 参数可按需覆盖
 
 # 运行
 python main.py
@@ -59,6 +56,86 @@ python main.py
 pip install -e ".[dev]"
 pytest tests/ -v        # 188 tests
 ```
+
+真实 BGE Worker 集成测试默认跳过，避免 CI 意外下载模型。确认模型已缓存后，
+可在 PowerShell 中显式验收生产进程链路：
+
+```powershell
+$env:RUN_REAL_EMBEDDING_INTEGRATION = "1"
+$env:HF_HUB_OFFLINE = "1"
+.\.venv\Scripts\python.exe -m pytest tests/test_embedding_worker_integration.py -q -p no:cacheprovider
+```
+
+## Tool Router
+
+`Runtime.run_async()` 在每个 LLM 步骤前执行一次 Embedding Router：
+
+1. 使用工具名、描述和参数 Schema 构建能力文本；
+2. 用本地 BGE 模型批量计算查询与未缓存工具向量；
+3. 按余弦相似度、阈值和 `top-k` 选择候选工具；
+4. 只把候选 Schema 发送给 LLM，Validator 同时拒绝本轮未入选的调用。
+
+本地 BGE 由持久的 `rag.embedding_worker` 子进程独占。Worker 在第一次路由时
+惰性启动；父进程通过有界 JSONL 协议发送批量请求，并分别限制锁等待、模型
+启动、推理和关闭时间。推理超时、调用取消或协议损坏会终止当前 Worker，
+下一次路由启动新的 generation。CLI 正常退出、异常和取消都会关闭 Worker，
+生产路径不会回退到无法硬终止的线程推理。
+
+父进程为 Worker 生命周期写入结构化日志。事件覆盖启动与 READY、推理开始与
+完成、锁/启动/推理/关闭超时、取消、协议违规、generation 重启和最终关闭；
+字段包括 `component`、`event`、`operation`、`outcome`、`generation`、PID、
+批量大小、向量维度和耗时（适用时）。日志不会记录原始文本、向量、环境变量、
+Token 或 Worker stderr 内容；stderr 只保留在客户端的有界诊断尾部中。
+
+Worker 边界可通过 `.env` 配置：
+
+```text
+TOOL_ROUTER_WORKER_STARTUP_TIMEOUT_S=180
+TOOL_ROUTER_WORKER_INFERENCE_TIMEOUT_S=30
+TOOL_ROUTER_WORKER_LOCK_TIMEOUT_S=5
+TOOL_ROUTER_WORKER_SHUTDOWN_TIMEOUT_S=5
+TOOL_ROUTER_WORKER_MAX_REQUEST_BYTES=262144
+TOOL_ROUTER_WORKER_MAX_RESPONSE_BYTES=4194304
+TOOL_ROUTER_WORKER_MAX_STDERR_CHARS=4096
+```
+
+没有工具达到阈值时返回空候选集，LLM 继续生成无工具回答；路由或
+Embedding 失败则在 LLM 调用前终止 Run，不会回退为暴露全部工具。
+
+每一步的路由结果按顺序记录在 `RuntimeState.metadata["tool_routes"]`。
+未启用 Planner 时，第一步使用用户输入，后续步骤使用 Memory 中最后一条消息；
+`plan_execute` 模式则在每一步使用经过验证的总目标和全部节点目标。当前尚无活动
+节点状态，因此 Router 使用的是完整计划，而不是单个 `StepGoal`。
+
+## Planner Agent
+
+`plan_execute` 模式会在每次 Run 的执行循环前调用独立 Planner。Planner 获得用户输入
+和工具能力摘要，只返回计划 JSON，不执行工具。框架随后检查顶层与任务字段、资源上限、
+任务 ID、依赖引用、自依赖和依赖环；只有通过检查的数据才会转换为不可变 `TaskPlan`。
+
+成功计划会：
+
+- 写入 `RuntimeState.metadata["plan"]`，并记录 `planner_duration_ms`；
+- 发出一次 `plan.created` 事件；
+- 作为 Tool Router 的查询意图；
+- 作为临时 system context 交给执行模型，但不写入持久 Memory。
+
+Planner 超时、供应商失败、响应结构错误或非法计划统一成为 `PlannerError`。Runtime 以
+`error_source="planner"` 终止，不调用 Router、执行模型或工具；上层取消仍按
+`CancelledError` 传播，并进入 Runtime 的 `CANCELED` 终态。同一 session 的规划位于
+`SessionCoordinator` lease 内，不会与同 session 的另一 Run 交错。
+
+配置：
+
+```text
+PATTERN=plan_execute
+PLANNER_TIMEOUT_S=30
+PLANNER_MAX_TASKS=12
+PLANNER_MAX_GOAL_CHARS=1000
+```
+
+当前计划是经过验证的执行上下文，不是节点级调度器：Runtime 尚未记录每个节点的
+`pending/running/succeeded/failed`，也不提供节点并行、结果绑定或断点恢复。
 
 ## 技术栈
 
