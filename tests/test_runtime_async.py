@@ -17,8 +17,9 @@ from errors import ConfigError, LLMError
 from runtime import LoopGuard, Runtime
 from runtime.policy import LoopPolicy
 from runtime.state import RunStatus
-from tools import Executor, ToolCallValidator, ToolRegistry
+from tools import Executor, ToolCallValidator, ToolRegistry, ToolRoute, ToolRoutingError
 
+from .conftest import AllToolsRouter
 from .conftest import make_llm_response as _make_llm_response
 from .conftest import make_memory as _make_memory
 from .conftest import make_tool_call as _make_tool_call
@@ -31,7 +32,7 @@ def _chunk(content=None, tool_calls=None, finish_reason=None):
 
 
 def _make_runtime(*, llm_call_async=None, llm_stream_async=None,
-                  registry=None, handlers=None, max_steps=100):
+                  registry=None, handlers=None, max_steps=100, tool_router=None):
     """构造 Runtime（仅 async 槽）+ Executor + LoopGuard + Validator + 真 MemoryManager。
 
     D24 起 Runtime 强制注入 loop_guard / validator：
@@ -48,6 +49,7 @@ def _make_runtime(*, llm_call_async=None, llm_stream_async=None,
         handlers=handlers or [],
         loop_guard=LoopGuard(LoopPolicy(max_steps=max_steps)),
         validator=ToolCallValidator(executor.get_schemas()),
+        tool_router=tool_router or AllToolsRouter(),
     )
     return runtime, memory_manager
 
@@ -458,3 +460,125 @@ async def test_async_only_valid_calls_execute():
     tool_msgs = [m for m in msgs if m.get("role") == "tool"]
     assert any(m.get("tool_call_id") == "v2" and "[VALIDATION ERROR]" in m.get("content", "") for m in tool_msgs)
     assert any(m.get("tool_call_id") == "v1" and m.get("name") == "echo" for m in tool_msgs)
+
+
+@pytest.mark.anyio
+async def test_runtime_sends_only_routed_schemas_and_records_decision():
+    registry = ToolRegistry()
+
+    @registry.register
+    def selected() -> str:
+        """Selected tool."""
+        return "selected"
+
+    @registry.register
+    def hidden() -> str:
+        """Hidden tool."""
+        return "hidden"
+
+    class SelectedOnlyRouter:
+        async def route(self, query, schemas):
+            selected_schema = next(
+                schema for schema in schemas
+                if schema["function"]["name"] == "selected"
+            )
+            return ToolRoute(
+                selected_schemas=(selected_schema,),
+                ranked_scores=(),
+                model_version="test-v1",
+                threshold=0.5,
+            )
+
+    observed_tools = []
+
+    async def llm(messages, tools):
+        observed_tools.append(tools)
+        return _make_llm_response("done")
+
+    runtime, _ = _make_runtime(
+        llm_call_async=llm,
+        registry=registry,
+        tool_router=SelectedOnlyRouter(),
+    )
+    state = await runtime.run_async("use selected")
+
+    assert [schema["function"]["name"] for schema in observed_tools[0]] == [
+        "selected"
+    ]
+    tool_routes = state.metadata["tool_routes"]
+    assert len(tool_routes) == 1
+    assert tool_routes[0]["selected_tools"] == ["selected"]
+    assert tool_routes[0]["model_version"] == "test-v1"
+    assert tool_routes[0]["threshold"] == 0.5
+
+
+@pytest.mark.anyio
+async def test_runtime_rejects_registered_tool_not_selected_for_run():
+    registry = ToolRegistry()
+    executed = []
+
+    @registry.register
+    def selected() -> str:
+        """Selected tool."""
+        return "selected"
+
+    @registry.register
+    def hidden() -> str:
+        """Hidden tool."""
+        executed.append("hidden")
+        return "hidden"
+
+    class SelectedOnlyRouter:
+        async def route(self, query, schemas):
+            selected_schema = next(
+                schema for schema in schemas
+                if schema["function"]["name"] == "selected"
+            )
+            return ToolRoute((selected_schema,), (), "test-v1", 0.5)
+
+    async def llm(messages, tools):
+        return _make_llm_response(
+            content="",
+            tool_calls=[_make_tool_call("hidden-1", "hidden", "{}")],
+        )
+
+    runtime, memory_manager = _make_runtime(
+        llm_call_async=llm,
+        registry=registry,
+        tool_router=SelectedOnlyRouter(),
+    )
+    state = await runtime.run_async("use selected")
+
+    assert state.status == RunStatus.VALIDATION_FAILED
+    assert executed == []
+    tool_messages = [
+        message
+        for message in memory_manager.get_or_create(state.session_id).messages
+        if message.get("role") == "tool"
+    ]
+    assert any("tool_not_routed" in message["content"] for message in tool_messages)
+
+
+@pytest.mark.anyio
+async def test_router_failure_terminates_before_llm_call():
+    class FailingRouter:
+        async def route(self, query, schemas):
+            raise ToolRoutingError("router unavailable")
+
+    llm_called = False
+
+    async def llm(messages, tools):
+        nonlocal llm_called
+        llm_called = True
+        return _make_llm_response("unexpected")
+
+    runtime, _ = _make_runtime(
+        llm_call_async=llm,
+        tool_router=FailingRouter(),
+    )
+    state = await runtime.run_async("hello")
+
+    assert state.status == RunStatus.FAILED
+    assert state.error_source == "router"
+    assert state.error_info["type"] == "ToolRoutingError"
+    assert llm_called is False

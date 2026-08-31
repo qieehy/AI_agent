@@ -57,7 +57,7 @@ agent = "main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["llm*", "memory*", "tools*", "runtime*", "config*", "errors*"]
+include = ["llm*", "memory*", "tools*", "runtime*", "config*", "errors*", "rag*"]
 
 [tool.ruff]
 line-length = 100

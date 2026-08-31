@@ -40,7 +40,7 @@ from types import SimpleNamespace
 from memory import MemoryManager, SessionStore
 from observability import logger
 from runtime import LoopGuard, LoopPolicy, RunStatus, Runtime, RuntimeState
-from tools import Executor, ToolCallValidator, ToolRegistry
+from tools import Executor, ToolCallValidator, ToolRegistry, ToolRoute
 
 N = 60                # 请求总数
 WORKERS = 10          # 线程池基线的并发度
@@ -74,6 +74,13 @@ async def _async_llm(messages, tools=None):
     return _fake_response()
 
 
+class _NoToolsRouter:
+    """Keep the benchmark independent from embedding latency."""
+
+    async def route(self, query: str, schemas: list[dict]) -> ToolRoute:
+        return ToolRoute((), (), "benchmark", 0.0)
+
+
 def _make_runtime() -> Runtime:
     """每请求一个 Runtime + 独立 :memory: 记忆（理由见模块 docstring 第 3 点）。"""
     executor = Executor(ToolRegistry(), mode="serial")
@@ -83,6 +90,7 @@ def _make_runtime() -> Runtime:
         memory_manager=MemoryManager(SessionStore(":memory:")),
         loop_guard=LoopGuard(LoopPolicy()),
         validator=ToolCallValidator(executor.get_schemas()),
+        tool_router=_NoToolsRouter(),
     )
 
 

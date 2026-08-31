@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -11,10 +12,12 @@ from memory import BufferMemory, MemoryManager
 from observability import logger, set_trace_id
 from runtime.event import Event, EventHandler, EventType
 from runtime.loop_guard import LoopGuard, tool_call_signature
+from runtime.session_coordinator import SessionCoordinator
 from runtime.state import RunStatus, RuntimeState
 from runtime.step import Step, StepKind
 from runtime.stop_reason import StopReason
-from tools import Executor, ToolCallValidator, ToolResult
+from runtime.planner import Planner, TaskPlan
+from tools import Executor, ToolCallValidator, ToolResult, ToolRouter
 from tools.validator import ToolCallViolation
 
 AsyncLLMCallable: TypeAlias = Callable[[list[dict], list[dict] | None], Awaitable[Any]]
@@ -34,58 +37,142 @@ class Runtime:
             handlers: list[EventHandler] | None = None,
             loop_guard: LoopGuard,
             validator: ToolCallValidator,
+            tool_router: ToolRouter,
             system_prompt: str | None = None,
+            session_coordinator: SessionCoordinator | None = None,
+            planner: Planner | None = None,
     ):
         self._llm_call_async = llm_call_async
         self._llm_stream_async = llm_stream_async
         self._handlers = handlers or []
         self._loop_guard = loop_guard
         self._validator = validator
+        self._tool_router = tool_router
         self._tool_executor = tool_executor
+        self._tool_schemas = self._tool_executor.get_schemas()
         self._memory_manager = memory_manager
         self._system_prompt = system_prompt
+        self._planner = planner
+        self._session_coordinator = session_coordinator or SessionCoordinator()
 
     async def run_async(self, user_input: str, session_id: str | None = None) -> RuntimeState:
         if self._llm_call_async is None and self._llm_stream_async is None:
             raise ConfigError("run_async 需要 llm_call_async 或 llm_stream_async (接线错误)")
 
+        resolved_session_id = session_id or str(uuid.uuid4())
+        async with self._session_coordinator.lease(resolved_session_id):
+            return await self._run_acquired_async(user_input, resolved_session_id)
+
+    async def _run_acquired_async(
+            self,
+            user_input: str,
+            session_id: str,
+    ) -> RuntimeState:
+        """Run after acquiring exclusive ownership of ``session_id``."""
         state = self._init_state(user_input, session_id)
         set_trace_id(state.session_id)
         _memory = self._memory_manager.get_or_create(state.session_id)
         logger.info(f"Run started | session={state.session_id} | input={user_input[:100]}")
         self._emit(Event(type=EventType.RUN_START, data={"user_input": user_input}, step_index=0))
 
-        while not state.is_terminal():
-            try:
-                await self._run_steps_async(state)
-            except AgentError:
-                logger.error(f"Run aborted | step={state.step_count} | status={state.status.value}")
-                break
+        plan: TaskPlan | None = None
+        try:
+            if self._planner is not None:
+                plan = await self._create_plan(
+                    state=state,
+                    user_input=user_input,
+                    planner=self._planner,
+                )
 
-        self._emit(Event(
-            type=EventType.RUN_FINISH if state.status == RunStatus.FINISHED else EventType.RUN_ERROR,
-            data={"final":_memory.messages[-1].get("content") if _memory.messages else None,
-                  "error_source": state.error_source if state.status == RunStatus.FAILED else None,
-                  "stop_reason": state.stop_reason.value if state.stop_reason else None,
-                  },
-            step_index=state.step_count
-        ))
+            while not state.is_terminal():
+                await self._run_steps_async(
+                    state=state,
+                    plan=plan,
+                )
+        except AgentError:
+            logger.error(f"Run aborted | step={state.step_count} | status={state.status.value}")
+        except asyncio.CancelledError as exc:
+            self._terminate(
+                state,
+                status=RunStatus.CANCELED,
+                stop_reason=StopReason.CANCELED,
+                error=exc,
+                error_source="runtime",
+            )
+            self._emit_terminal_event(state, _memory)
+            logger.info(
+                f"Run canceled | session={state.session_id} | steps={state.step_count}"
+            )
+            raise
+
+        self._emit_terminal_event(state, _memory)
         logger.info(f"Run finished | status={state.status.value} | steps={state.step_count}")
         return state
 
-
-    async def _run_steps_async(self, state: RuntimeState) -> None:
+    async def _run_steps_async(
+            self,
+            state: RuntimeState,
+            plan: TaskPlan | None,
+    ) -> None:
         step_result = self._loop_guard.check_steps(state.step_count)
         if step_result.detected:
             self._terminate(state, status=RunStatus.MAX_STEPS, stop_reason=StopReason.MAX_STEPS)
             return
 
         _memory = self._memory_manager.get_or_create(state.session_id)
-        t0 = time.perf_counter()
+
+        route_st = time.perf_counter()
+        all_schemas = self._tool_schemas
+        try:
+            latest_content = _memory.messages[-1].get("content")
+            route_query = latest_content if isinstance(latest_content, str) else ""
+            if plan is not None:
+                route_query = plan.routing_query()
+            route = await self._tool_router.route(route_query, all_schemas)
+        except AgentError as exc:
+            self._terminate(
+                state,
+                status=RunStatus.FAILED,
+                stop_reason=StopReason.ERROR,
+                error=exc,
+                error_info=exc.to_dict(),
+                error_source="router",
+            )
+            raise
+
+        routed_schemas = list(route.selected_schemas)
+        routed_names = set(route.selected_names)
+        route_duration_ms = (time.perf_counter() - route_st) * 1000
+        route_record = {
+            "selected_tools": list(route.selected_names),
+            "ranked_scores": [
+                {"name": item.name, "score": item.score}
+                for item in route.ranked_scores
+            ],
+            "model_version": route.model_version,
+            "threshold": route.threshold,
+            "duration_ms": route_duration_ms,
+        }
+        state.metadata.setdefault("tool_routes", []).append(route_record)
+        logger.info(
+            f"Tool routing | candidates={len(all_schemas)} | "
+            f"selected={len(routed_schemas)} | duration={route_duration_ms:.0f}ms"
+        )
+        self._emit(Event(
+            type=EventType.TOOL_ROUTING,
+            data=route_record,
+            step_index=state.step_count,
+        ))
         logger.debug(f"LLM request | step={state.step_count} | messages={len(_memory.messages)}")
         self._emit(Event(type=EventType.LLM_REQUEST, step_index=state.step_count))
+
+        t0 = time.perf_counter()
         try:
-            message = await self._get_llm_message_async(state=state, messages=_memory.get_context(), schemas=self._tool_executor.get_schemas())
+            message = await self._get_llm_message_async(
+                state=state,
+                messages=Runtime._messages_with_plan(messages=_memory.get_context(), plan=plan),
+                schemas=routed_schemas or None,
+            )
         except AgentError as e:
             self._terminate(state, status=RunStatus.FAILED, stop_reason=StopReason.ERROR,
                             error=e, error_info=e.to_dict(), error_source="llm")
@@ -121,7 +208,10 @@ class Runtime:
             _memory.add_message(message.model_dump() if hasattr(message, "model_dump") else dict(message))
             logger.info(f"Tool calls | step={state.step_count} | count={len(message.tool_calls)}")
 
-            validation = self._validator.validate(message.tool_calls)
+            validation = self._validator.validate(
+                message.tool_calls,
+                allowed_tool_names=routed_names,
+            )
 
             if validation.violations:
                 if not self._handle_validation_failure(
@@ -233,13 +323,24 @@ class Runtime:
                 logger.error(f"Event handler error | handler={type(handler).__name__} "
                              f"error={type(e).__name__}: {e}")
 
+    def _emit_terminal_event(self, state: RuntimeState, memory: BufferMemory) -> None:
+        self._emit(Event(
+            type=EventType.RUN_FINISH if state.status == RunStatus.FINISHED else EventType.RUN_ERROR,
+            data={"final":memory.messages[-1].get("content") if memory.messages else None,
+                  "error_source": state.error_source,
+                  "stop_reason": state.stop_reason.value if state.stop_reason else None,
+                  "status": state.status.value,
+                  },
+            step_index=state.step_count
+        ))
+
     def _terminate(
             self,
             state: RuntimeState,
             *,
             status: RunStatus,
             stop_reason: StopReason,
-            error: Exception | None = None,
+            error: BaseException | None = None,
             error_info: dict[str, Any] | None = None,
             error_source: str | None = None,
     ) -> None:
@@ -378,3 +479,64 @@ class Runtime:
             f"rounds={state.validation_failure_rounds}"
         )
         return True
+
+    async def _create_plan(self, state: RuntimeState, user_input: str, planner: Planner) -> TaskPlan:
+        started = time.perf_counter()
+        try:
+            plan = await planner.plan(user_input, self._tool_schemas)
+        except AgentError as exc:
+            self._terminate(
+                state,
+                status=RunStatus.FAILED,
+                stop_reason=StopReason.ERROR,
+                error=exc,
+                error_info=exc.to_dict(),
+                error_source="planner",
+            )
+            raise
+        duration_ms = (time.perf_counter() - started) * 1000
+        state.metadata["plan"] = plan.to_dict()
+        state.metadata["planner_duration_ms"] = duration_ms
+        self._emit(
+            Event(
+                type=EventType.PLAN_CREATED,
+                data={
+                    "plan": plan.to_dict(),
+                    "duration_ms": duration_ms,
+                },
+                step_index=0,
+            )
+        )
+        logger.info(
+            f"Plan created | tasks={len(plan.tasks)} "
+            f"| duration={duration_ms:.0f}ms"
+        )
+        return plan
+
+    @staticmethod
+    def _messages_with_plan(
+            messages: list[dict],
+            plan: TaskPlan | None,
+    ) -> list[dict]:
+        if plan is None:
+            return messages
+
+        enriched = list(messages)
+        insertion_index = 0
+
+        while (
+                insertion_index < len(enriched)
+                and enriched[insertion_index].get("role")
+                == "system"
+        ):
+            insertion_index += 1
+
+        enriched.insert(
+            insertion_index,
+            {
+                "role": "system",
+                "content": plan.execution_context(),
+            },
+        )
+
+        return enriched

@@ -9,6 +9,19 @@ import tempfile
 from unittest.mock import MagicMock
 
 from memory import MemoryManager, SessionStore
+from tools import ToolRoute
+
+
+class AllToolsRouter:
+    """Test-only Router that deterministically selects every supplied schema."""
+
+    async def route(self, query: str, schemas: list[dict]) -> ToolRoute:
+        return ToolRoute(
+            selected_schemas=tuple(schemas),
+            ranked_scores=(),
+            model_version="test-router",
+            threshold=0.0,
+        )
 
 # ========== helpers ==========
 

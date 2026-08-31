@@ -66,3 +66,46 @@ class ConfigError(AgentError):
 
 class MemoryError(AgentError):
     """记忆层业务失败（存储不可用 / 摘要 LLM 失败 / 向量库宕机）。"""
+
+
+class SessionBusyError(AgentError):
+    """A run already owns the requested session."""
+
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        retry_after_ms: int | None = None,
+    ) -> None:
+        context: dict[str, Any] = {"session_id": session_id}
+        if retry_after_ms is not None:
+            context["retry_after_ms"] = retry_after_ms
+        super().__init__(
+            f"Session {session_id} already has an active run",
+            context=context,
+        )
+
+
+class ToolRoutingError(AgentError):
+    """Tool candidate selection failed before an LLM request was made."""
+
+
+class EmbeddingWorkerError(AgentError):
+    """Base error for the isolated embedding worker boundary."""
+
+
+class EmbeddingWorkerProtocolError(EmbeddingWorkerError):
+    """The embedding worker exchanged an invalid or unexpected IPC message."""
+
+
+class EmbeddingWorkerTimeoutError(EmbeddingWorkerError):
+    """An embedding worker lifecycle phase exceeded its configured deadline."""
+
+    def __init__(self, phase: str, timeout_s: float) -> None:
+        super().__init__(
+            f"embedding worker {phase} timed out",
+            context={"phase": phase, "timeout_s": timeout_s},
+        )
+
+class PlannerError(AgentError):
+    """Planning failed or produced an invalid task plan."""

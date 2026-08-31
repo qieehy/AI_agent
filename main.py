@@ -1,4 +1,11 @@
 import asyncio
+import os
+import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from types import TracebackType
+from typing import Self, cast
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -6,31 +13,172 @@ from typer import Typer
 
 from config import get_settings
 from llm import AsyncLLMClient
-from memory import create_memory_manager
+from memory import MemoryManager, create_memory_manager
 from observability import logger, setup_logging
+from runtime import Planner
 from prompts import create_agent_profile
 from prompts.base import PromptContext
-from runtime import Event, EventType, LoopGuard, Runtime
-from tools import Executor, ToolCallValidator, create_registry
+from prompts.factory import PatternName
+from rag.process_embeddings import ProcessEmbeddingClient
+from runtime import Event, EventHandler, EventType, LoopGuard, Runtime
+from tools import EmbeddingRouter, Executor, ToolCallValidator, create_registry
 
 app = Typer()
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+_WORKER_ENV_ALLOWLIST = (
+    "APPDATA",
+    "CUDA_HOME",
+    "CUDA_PATH",
+    "CUDA_VISIBLE_DEVICES",
+    "HF_HOME",
+    "HF_HUB_CACHE",
+    "HF_HUB_OFFLINE",
+    "HF_TOKEN",
+    "HOME",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "LANG",
+    "LC_ALL",
+    "LD_LIBRARY_PATH",
+    "LOCALAPPDATA",
+    "NO_PROXY",
+    "PATH",
+    "PYTHONPATH",
+    "REQUESTS_CA_BUNDLE",
+    "SENTENCE_TRANSFORMERS_HOME",
+    "SSL_CERT_FILE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TORCH_HOME",
+    "TRANSFORMERS_CACHE",
+    "USERPROFILE",
+    "VIRTUAL_ENV",
+    "WINDIR",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeApplication:
+    """Own the Runtime and every async resource created by the composition root."""
+
+    runtime: Runtime
+    memory_manager: MemoryManager
+    executor: Executor
+    embedding_client: ProcessEmbeddingClient
+
+    async def aclose(self) -> None:
+        await self.embedding_client.aclose()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.aclose()
+
+
+def _embedding_worker_environment(
+    source: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    source_environment = os.environ if source is None else source
+    environment = {
+        name: value
+        for name in _WORKER_ENV_ALLOWLIST
+        if (value := source_environment.get(name))
+    }
+    environment.update(
+        {
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONUTF8": "1",
+        }
+    )
+    return environment
+
+
+def build_runtime(
+    *,
+    model: str | None = None,
+    pattern: str | None = None,
+    handlers: list[EventHandler] | None = None,
+) -> RuntimeApplication:
+    """Build one process-local application and its owned embedding worker client."""
+    settings = get_settings()
+    async_llm = AsyncLLMClient(model=model) if model else AsyncLLMClient()
+    registry = create_registry()
+    memory_manager = create_memory_manager()
+    executor = Executor(registry, mode="parallel")
+    embedding_client = ProcessEmbeddingClient(
+        command=(
+            sys.executable,
+            "-m",
+            "rag.embedding_worker",
+            "--model-name",
+            settings.tool_router_model,
+            "--model-version",
+            settings.tool_router_model,
+        ),
+        cwd=PROJECT_ROOT,
+        environment=_embedding_worker_environment(),
+        expected_model_version=settings.tool_router_model,
+        startup_timeout_s=settings.tool_router_worker_startup_timeout_s,
+        inference_timeout_s=settings.tool_router_worker_inference_timeout_s,
+        lock_timeout_s=settings.tool_router_worker_lock_timeout_s,
+        shutdown_timeout_s=settings.tool_router_worker_shutdown_timeout_s,
+        max_request_bytes=settings.tool_router_worker_max_request_bytes,
+        max_response_bytes=settings.tool_router_worker_max_response_bytes,
+        max_stderr_chars=settings.tool_router_worker_max_stderr_chars,
+    )
+    tool_router = EmbeddingRouter(
+        embedding_client,
+        model_version=settings.tool_router_model,
+        threshold=settings.tool_router_threshold,
+        top_k=settings.tool_router_top_k,
+        cache_size=settings.tool_router_cache_size,
+        max_query_chars=settings.tool_router_max_query_chars,
+    )
+
+    pattern = cast(PatternName, pattern or settings.pattern)
+    profile = create_agent_profile(pattern=pattern)
+    planner = None
+    if pattern == "plan_execute":
+        planner = Planner(
+            async_llm,
+            timeout_s=settings.planner_timeout_s,
+            max_tasks=settings.planner_max_tasks,
+            max_goal_chars=settings.planner_max_goal_chars,
+        )
+    system_message = profile.pattern.build(PromptContext())
+    runtime = Runtime(
+        llm_call_async=async_llm,
+        llm_stream_async=async_llm.stream,
+        tool_executor=executor,
+        memory_manager=memory_manager,
+        handlers=handlers,
+        loop_guard=LoopGuard(profile.loop_policy),
+        validator=ToolCallValidator(executor.get_schemas()),
+        tool_router=tool_router,
+        system_prompt=system_message.content,
+        planner=planner,
+    )
+    return RuntimeApplication(
+        runtime=runtime,
+        memory_manager=memory_manager,
+        executor=executor,
+        embedding_client=embedding_client,
+    )
+
+
 @app.command()
 def chat(model: str | None = None, pattern: str | None = None):
     """CLI 聊天。--pattern 覆盖 .env 的 settings.pattern（D24: Prompt 可配置）。"""
     setup_logging()
-    async_llm = AsyncLLMClient(model = model) if model else AsyncLLMClient()
-    registry = create_registry()
-    memory_manager = create_memory_manager()
-    executor = Executor(registry, mode="parallel")
-
-    # 组合根：AgentProfile = 提示模式 + 循环策略，一次工厂调用全部就位
-    profile = create_agent_profile(pattern or get_settings().pattern)
-    system_message = profile.pattern.build(
-        PromptContext(tool_schemas=tuple(executor.get_schemas()))
-    )
-    loop_guard = LoopGuard(profile.loop_policy)
-    validator = ToolCallValidator(executor.get_schemas())
-
     console = Console()
     streamed = [False]
 
@@ -48,17 +196,34 @@ def chat(model: str | None = None, pattern: str | None = None):
             names = [tc["function"]["name"] for tc in event.data["tool_calls"]]
             console.print(f"\n[dim]🔧 调用工具: {', '.join(names)}[/dim]")
 
-    runtime = Runtime(
-        llm_call_async=async_llm,
-        llm_stream_async=async_llm.stream,
-        tool_executor=executor,
-        memory_manager=memory_manager,
+    application = build_runtime(
+        model=model,
+        pattern=pattern,
         handlers=[on_llm_event],
-        loop_guard=loop_guard,
-        validator=validator,
-        system_prompt=system_message.content,
     )
-    asyncio.run(_repl(runtime=runtime, memory_manager=memory_manager, executor=executor, console=console, streamed=streamed))
+    asyncio.run(
+        _run_application_repl(
+            application=application,
+            console=console,
+            streamed=streamed,
+        )
+    )
+
+
+async def _run_application_repl(
+    *,
+    application: RuntimeApplication,
+    console: Console,
+    streamed: list[bool],
+) -> None:
+    async with application:
+        await _repl(
+            runtime=application.runtime,
+            memory_manager=application.memory_manager,
+            executor=application.executor,
+            console=console,
+            streamed=streamed,
+        )
 
 
 async def _repl(runtime, memory_manager, executor, console, streamed)-> None:

@@ -48,11 +48,12 @@ class Executor:
 
         sem = asyncio.Semaphore(self._max_workers)
 
-        async def _bounded(tc):
-            async with sem:
-                return await asyncio.to_thread(self._run_one, tc)
+        return list(await asyncio.gather(*(self._bounded(tc, sem) for tc in tool_calls)))   # *():  [ToolResult] -> ToolResult, ...
 
-        return list(await asyncio.gather(*(_bounded(tc) for tc in tool_calls)))
+
+    async def _bounded(self, tc, sem: asyncio.Semaphore) -> ToolResult:
+        async with sem:
+            return await asyncio.to_thread(self._run_one, tc)
 
 
     def _run_one(self, tool_call: Any) -> ToolResult:

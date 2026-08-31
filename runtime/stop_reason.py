@@ -8,4 +8,5 @@ class StopReason(str, Enum):
     MAX_STEPS = "max_steps"
     LOOP_DETECTED = "loop_detected"
     VALIDATION_FAILED = "validation_failed"
+    CANCELED = "canceled"
     ERROR = "error"

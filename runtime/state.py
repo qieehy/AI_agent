@@ -33,7 +33,7 @@ class RuntimeState:
     # tool_error_rounds = 连续整轮工具全败的轮数
     validation_failure_rounds: int = 0
     tool_error_rounds: int = 0
-    error: Exception | None = None
+    error: BaseException | None = None
     error_source: str | None = None
     error_info: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

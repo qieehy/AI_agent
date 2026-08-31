@@ -1,4 +1,5 @@
 import json
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,12 +40,17 @@ class ToolCallValidator:
     def validate(
             self,
             tool_calls: list[Any],
+            *,
+            allowed_tool_names: Collection[str] | None = None,
     ) -> ToolCallValidationResult:
         valid_calls: list[Any] = []
         violations: list[ToolCallViolation] = []
 
         for tool_call in tool_calls:
-            violation = self._validate_one(tool_call)
+            violation = self._validate_one(
+                tool_call,
+                allowed_tool_names=allowed_tool_names,
+            )
 
             if violation is None:
                 valid_calls.append(tool_call)
@@ -59,6 +65,8 @@ class ToolCallValidator:
     def _validate_one(
             self,
             tool_call: Any,
+            *,
+            allowed_tool_names: Collection[str] | None,
     ) -> ToolCallViolation | None:
 
         tool_call_id = getattr(tool_call, "id", "")
@@ -90,6 +98,14 @@ class ToolCallValidator:
                 name=name,
                 reason="unknown_tool",
                 details=f"tool {name!r} is not registered",
+            )
+
+        if allowed_tool_names is not None and name not in allowed_tool_names:
+            return ToolCallViolation(
+                tool_call_id=tool_call_id,
+                name=name,
+                reason="tool_not_routed",
+                details=f"tool {name!r} was not selected for this run",
             )
 
         arguments = getattr(function, "arguments", None)

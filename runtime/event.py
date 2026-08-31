@@ -9,6 +9,7 @@ from typing import Any, TypeAlias
 
 class EventType(str, Enum):
     RUN_START = "run.start"
+    TOOL_ROUTING = "tool.routing"
     LLM_REQUEST = "llm.request"
     LLM_RESPONSE = "llm.response"
     LLM_TOKEN = "llm.token"
@@ -17,6 +18,7 @@ class EventType(str, Enum):
     TOOL_RESPONSE = "tool.response"
     RUN_FINISH = "run.finish"
     RUN_ERROR = "run.error"
+    PLAN_CREATED = "plan.created"
 
 @dataclass
 class Event:
