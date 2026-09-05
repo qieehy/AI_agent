@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
-from typing import Self, cast
+from typing import cast
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -71,7 +71,7 @@ class RuntimeApplication:
     async def aclose(self) -> None:
         await self.embedding_client.aclose()
 
-    async def __aenter__(self) -> Self:
+    async def __aenter__(self) -> "RuntimeApplication":
         return self
 
     async def __aexit__(
