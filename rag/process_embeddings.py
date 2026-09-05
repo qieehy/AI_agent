@@ -164,7 +164,7 @@ class ProcessEmbeddingClient:
                     self._exchange_locked(request),
                     timeout=self._inference_timeout_s,
                 )
-            except TimeoutError as exc:
+            except asyncio.TimeoutError as exc:
                 worker_pid = self.worker_pid
                 await self._stop_process_locked(force=True)
                 self._state = WorkerState.NEW
@@ -355,7 +355,7 @@ class ProcessEmbeddingClient:
         wait_started_at = perf_counter()
         try:
             await asyncio.wait_for(self._operation_lock.acquire(), timeout=timeout)
-        except TimeoutError as exc:
+        except asyncio.TimeoutError as exc:
             self._emit_event(
                 "WARNING",
                 event="embedding_worker_lock_timed_out",
@@ -399,7 +399,7 @@ class ProcessEmbeddingClient:
                 self._spawn_and_wait_ready_locked(self._generation),
                 timeout=self._startup_timeout_s,
             )
-        except TimeoutError as exc:
+        except asyncio.TimeoutError as exc:
             worker_pid = self.worker_pid
             await self._stop_process_locked(force=True)
             self._state = WorkerState.NEW
@@ -617,7 +617,7 @@ class ProcessEmbeddingClient:
                 await process.stdin.wait_closed()
             try:
                 await asyncio.wait_for(process.wait(), timeout=self._shutdown_timeout_s)
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 force = True
 
         if process.returncode is None and force:
@@ -625,7 +625,7 @@ class ProcessEmbeddingClient:
                 process.kill()
             try:
                 await asyncio.wait_for(process.wait(), timeout=self._shutdown_timeout_s)
-            except TimeoutError as exc:
+            except asyncio.TimeoutError as exc:
                 raise EmbeddingWorkerTimeoutError(
                     "shutdown",
                     self._shutdown_timeout_s,
@@ -648,7 +648,7 @@ class ProcessEmbeddingClient:
                 process.wait(),
                 timeout=self._shutdown_timeout_s,
             )
-        except TimeoutError as exc:
+        except asyncio.TimeoutError as exc:
             raise EmbeddingWorkerTimeoutError(
                 "shutdown",
                 self._shutdown_timeout_s,

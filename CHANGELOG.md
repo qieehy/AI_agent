@@ -18,6 +18,7 @@
 ### Fixed
 - 流式工具名重装改为覆盖语义：provider 每 fragment 重复携带 name 时不再指数翻倍
 - 修复 Python 3.10 导入 `main.py` 时因使用 `typing.Self` 导致的测试收集失败
+- 修复 Python 3.10 中 Embedding Worker 未捕获 `asyncio.TimeoutError` 导致超时分类、进程清理和恢复流程失效
 
 ### Tests
 - 新增显式 opt-in 的真实 BGE Worker 集成验收，覆盖生产 composition root、READY、归一化向量、语义关系、进程复用和关闭清理
