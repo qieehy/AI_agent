@@ -46,10 +46,16 @@ async def test_runtime_uses_validated_plan_for_context_routing_and_event() -> No
             return await super().route(query, schemas)
 
     async def planner_llm(messages, tools):
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-            content='{"goal":"answer with evidence","tasks":['
-            '{"id":"find","goal":"search authoritative evidence","dependencies":[]}]}'
-        ))])
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='{"goal":"answer with evidence","tasks":['
+                        '{"id":"find","goal":"search authoritative evidence","dependencies":[]}]}'
+                    )
+                )
+            ]
+        )
 
     execution_messages = []
 
@@ -57,18 +63,17 @@ async def test_runtime_uses_validated_plan_for_context_routing_and_event() -> No
         execution_messages.append(messages)
         return make_llm_response("done")
 
-    runtime = _runtime(
-        planner_llm, execution_llm, events=events, router=RecordingRouter()
-    )
+    runtime = _runtime(planner_llm, execution_llm, events=events, router=RecordingRouter())
     state = await runtime.run_async("question")
 
     assert state.status == RunStatus.FINISHED
     assert state.metadata["plan"]["tasks"][0]["id"] == "find"
     assert "search authoritative evidence" in routed_queries[0]
-    assert any(
+    plan_contexts = [
         message["role"] == "system" and "validated execution DAG" in message["content"]
         for message in execution_messages[0]
-    )
+    ]
+    assert plan_contexts.count(True) == 1
     assert [event.type.value for event in events].count("plan.created") == 1
 
 

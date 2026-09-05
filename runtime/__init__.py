@@ -5,13 +5,13 @@ from runtime.loop_guard import (
     ToolCallSignature,
     tool_call_signature,
 )
+from runtime.planner import Planner, PlanTask, TaskPlan
 from runtime.policy import LoopPolicy
 from runtime.runtime import Runtime
 from runtime.session_coordinator import SessionConflictMode, SessionCoordinator
 from runtime.state import RunStatus, RuntimeState
 from runtime.step import Step, StepKind
 from runtime.stop_reason import StopReason
-from runtime.planner import Planner, PlanTask, TaskPlan
 
 __all__ = [
     "Runtime", "RuntimeState", "RunStatus", "StopReason",

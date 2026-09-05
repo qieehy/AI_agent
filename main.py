@@ -2,7 +2,7 @@ import asyncio
 import os
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 from typing import Self, cast
@@ -15,12 +15,12 @@ from config import get_settings
 from llm import AsyncLLMClient
 from memory import MemoryManager, create_memory_manager
 from observability import logger, setup_logging
-from runtime import Planner
 from prompts import create_agent_profile
 from prompts.base import PromptContext
 from prompts.factory import PatternName
 from rag.process_embeddings import ProcessEmbeddingClient
-from runtime import Event, EventHandler, EventType, LoopGuard, Runtime
+from runtime import Event, EventHandler, EventType, LoopGuard, Planner, RunStatus, Runtime
+from runtime.reflection import Critic
 from tools import EmbeddingRouter, Executor, ToolCallValidator, create_registry
 
 app = Typer()
@@ -147,12 +147,24 @@ def build_runtime(
     pattern = cast(PatternName, pattern or settings.pattern)
     profile = create_agent_profile(pattern=pattern)
     planner = None
+    critic = None
+    loop_policy = profile.loop_policy
     if pattern == "plan_execute":
         planner = Planner(
             async_llm,
             timeout_s=settings.planner_timeout_s,
             max_tasks=settings.planner_max_tasks,
             max_goal_chars=settings.planner_max_goal_chars,
+        )
+    if pattern == "reflection":
+        critic = Critic(
+            async_llm,
+            timeout_s=settings.critic_timeout_s,
+            max_feedback_chars=settings.critic_max_feedback_chars,
+        )
+        loop_policy = replace(
+            profile.loop_policy,
+            reflection_revision_rounds=settings.reflection_revision_rounds,
         )
     system_message = profile.pattern.build(PromptContext())
     runtime = Runtime(
@@ -161,11 +173,12 @@ def build_runtime(
         tool_executor=executor,
         memory_manager=memory_manager,
         handlers=handlers,
-        loop_guard=LoopGuard(profile.loop_policy),
+        loop_guard=LoopGuard(loop_policy),
         validator=ToolCallValidator(executor.get_schemas()),
         tool_router=tool_router,
         system_prompt=system_message.content,
         planner=planner,
+        critic=critic,
     )
     return RuntimeApplication(
         runtime=runtime,
@@ -259,9 +272,19 @@ async def _repl(runtime, memory_manager, executor, console, streamed)-> None:
         streamed[0] = False
         state = await runtime.run_async(q, session_id=session_id)
         session_id = state.session_id
-        if state.status.value == "failed":
-            err = state.error_info or {}
-            logger.error(f"[{state.error_source}] {err.get('message', '?')}")
+        if state.status is not RunStatus.FINISHED:
+            error_info = state.error_info or {}
+            message = error_info.get("message")
+
+            logger.error(
+                f"Run did not finish successfully | "
+                f"status={state.status.value} | "
+                f"source={state.error_source} | "
+                f"message={message or '?'}"
+            )
+
+            detail = f": {message}" if isinstance(message, str) and message else ""
+            console.print(f"[red]Run ended: {state.status.value}{detail}[/red]")
         elif streamed[0]:
             console.print()  # 流式：内容已实时打印，只补换行
         else:

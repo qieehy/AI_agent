@@ -19,6 +19,8 @@ class EventType(str, Enum):
     RUN_FINISH = "run.finish"
     RUN_ERROR = "run.error"
     PLAN_CREATED = "plan.created"
+    CRITIQUE_COMPLETED = "critique.completed"
+
 
 @dataclass
 class Event:
@@ -27,7 +29,6 @@ class Event:
     data: dict[str, Any] = field(default_factory=dict)
     step_index: int | None = None
 
+
 EventHandler: TypeAlias = Callable[[Event], None]
 """定义EventHandler为一种函数类型: 参数类型Event, 无返回值"""
-
-

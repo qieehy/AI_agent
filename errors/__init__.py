@@ -1,4 +1,5 @@
 """errors 包 - 统一异常入口。"""
+
 from .exceptions import (
     AgentError,
     ConfigError,
@@ -8,6 +9,7 @@ from .exceptions import (
     LLMError,
     MemoryError,
     PlannerError,
+    ReflectionError,
     SessionBusyError,
     ToolError,
     ToolRoutingError,
@@ -25,4 +27,5 @@ __all__ = [
     "SessionBusyError",
     "ToolRoutingError",
     "PlannerError",
+    "ReflectionError",
 ]

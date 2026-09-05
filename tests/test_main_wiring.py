@@ -7,16 +7,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
+from rich.markdown import Markdown
 
 from config.settings import Settings
 from main import (
     PROJECT_ROOT,
     RuntimeApplication,
     _embedding_worker_environment,
+    _repl,
     _run_application_repl,
     build_runtime,
 )
 from rag.process_embeddings import ProcessEmbeddingClient
+from runtime import RunStatus, RuntimeState, StopReason
+from runtime.reflection import Critic
 from tools import EmbeddingRouter, ToolRegistry
 
 
@@ -38,6 +42,9 @@ def _settings() -> SimpleNamespace:
         planner_timeout_s=13.0,
         planner_max_tasks=9,
         planner_max_goal_chars=700,
+        critic_timeout_s=17.0,
+        critic_max_feedback_chars=400,
+        reflection_revision_rounds=3,
     )
 
 
@@ -101,6 +108,7 @@ def test_build_runtime_wires_process_embedding_client_into_production_router() -
     assert runtime_kwargs["handlers"] == [handler]
     assert runtime_kwargs["validator"] is not None
     assert runtime_kwargs["planner"] is None
+    assert runtime_kwargs["critic"] is None
     assert application.runtime is runtime_instance
     assert application.memory_manager is memory
     assert application.embedding_client is embedding_client
@@ -127,6 +135,30 @@ def test_build_runtime_wires_planner_only_for_plan_execute_pattern() -> None:
     assert planner._timeout_s == 13.0
     assert planner._max_tasks == 9
     assert planner._max_goal_chars == 700
+
+
+def test_build_runtime_wires_critic_only_for_reflection_pattern() -> None:
+    registry = ToolRegistry()
+    llm = MagicMock()
+
+    with (
+        patch("main.get_settings", return_value=_settings()),
+        patch("main.AsyncLLMClient", return_value=llm),
+        patch("main.create_registry", return_value=registry),
+        patch("main.create_memory_manager", return_value=MagicMock()),
+        patch("main.ProcessEmbeddingClient", return_value=MagicMock()),
+        patch("main.Runtime", return_value=MagicMock()) as runtime_type,
+    ):
+        build_runtime(pattern="reflection")
+
+    runtime_kwargs = runtime_type.call_args.kwargs
+    critic = runtime_kwargs["critic"]
+    assert isinstance(critic, Critic)
+    assert critic._llm_call is llm
+    assert critic._timeout_s == 17.0
+    assert critic._max_feedback_chars == 400
+    assert runtime_kwargs["planner"] is None
+    assert runtime_kwargs["loop_guard"].policy.reflection_revision_rounds == 3
 
 
 def test_worker_environment_is_allowlisted_and_excludes_agent_secrets() -> None:
@@ -222,6 +254,57 @@ def test_planner_configuration_fails_fast(
         )
 
 
+def test_reflection_configuration_has_bounded_defaults() -> None:
+    settings = Settings(
+        api_key="test-key",
+        model="test-model",
+        base_url="https://example.invalid/v1",
+        _env_file=None,
+    )
+
+    assert settings.critic_timeout_s == 30.0
+    assert settings.critic_max_feedback_chars == 2000
+    assert settings.reflection_revision_rounds == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("critic_timeout_s", 0),
+        ("critic_timeout_s", float("inf")),
+        ("critic_timeout_s", float("nan")),
+        ("critic_max_feedback_chars", 0),
+        ("critic_max_feedback_chars", 16_385),
+        ("reflection_revision_rounds", -1),
+        ("reflection_revision_rounds", 11),
+    ],
+)
+def test_reflection_configuration_fails_fast(
+    field: str,
+    value: int | float,
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            api_key="test-key",
+            model="test-model",
+            base_url="https://example.invalid/v1",
+            _env_file=None,
+            **{field: value},
+        )
+
+
+def test_critic_feedback_limit_cannot_exceed_router_query_limit() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            api_key="test-key",
+            model="test-model",
+            base_url="https://example.invalid/v1",
+            tool_router_max_query_chars=100,
+            critic_max_feedback_chars=101,
+            _env_file=None,
+        )
+
+
 def _application_with_close_mock() -> tuple[RuntimeApplication, AsyncMock]:
     embedding_client = MagicMock(spec=ProcessEmbeddingClient)
     close = AsyncMock()
@@ -290,3 +373,66 @@ async def test_application_repl_closes_embedding_client_on_cancellation() -> Non
             await task
 
     close.assert_awaited_once_with()
+
+
+@pytest.mark.anyio
+async def test_repl_does_not_render_memory_as_answer_for_non_success_terminal() -> None:
+    state = RuntimeState(
+        session_id="reflection-limit-session",
+        status=RunStatus.REFLECTION_LIMIT,
+        stop_reason=StopReason.REFLECTION_LIMIT,
+    )
+    runtime = MagicMock()
+    runtime.run_async = AsyncMock(return_value=state)
+    memory_manager = MagicMock()
+    console = MagicMock()
+    console.input.side_effect = ["question", "/q"]
+
+    await _repl(
+        runtime=runtime,
+        memory_manager=memory_manager,
+        executor=MagicMock(),
+        console=console,
+        streamed=[False],
+    )
+
+    memory_manager.get_or_create.assert_not_called()
+    assert any(
+        "reflection_limit" in str(call.args[0])
+        for call in console.print.call_args_list
+        if call.args
+    )
+
+
+@pytest.mark.anyio
+async def test_repl_renders_accepted_buffered_reflection_answer_once() -> None:
+    state = RuntimeState(
+        session_id="accepted-reflection-session",
+        status=RunStatus.FINISHED,
+        stop_reason=StopReason.FINISH_NORMAL,
+    )
+    runtime = MagicMock()
+    runtime.run_async = AsyncMock(return_value=state)
+    memory_manager = MagicMock()
+    memory_manager.get_or_create.return_value = SimpleNamespace(
+        messages=[
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "approved answer"},
+        ]
+    )
+    console = MagicMock()
+    console.input.side_effect = ["question", "/q"]
+
+    await _repl(
+        runtime=runtime,
+        memory_manager=memory_manager,
+        executor=MagicMock(),
+        console=console,
+        streamed=[False],
+    )
+
+    memory_manager.get_or_create.assert_called_once_with("accepted-reflection-session")
+    console.print.assert_called_once()
+    rendered = console.print.call_args.args[0]
+    assert isinstance(rendered, Markdown)
+    assert rendered.markup == "approved answer"

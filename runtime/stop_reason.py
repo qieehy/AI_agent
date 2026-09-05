@@ -10,3 +10,4 @@ class StopReason(str, Enum):
     VALIDATION_FAILED = "validation_failed"
     CANCELED = "canceled"
     ERROR = "error"
+    REFLECTION_LIMIT = "reflection_limit"

@@ -54,7 +54,7 @@ python main.py
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v        # 188 tests
+pytest tests/ -v
 ```
 
 真实 BGE Worker 集成测试默认跳过，避免 CI 意外下载模型。确认模型已缓存后，
@@ -136,6 +136,32 @@ PLANNER_MAX_GOAL_CHARS=1000
 
 当前计划是经过验证的执行上下文，不是节点级调度器：Runtime 尚未记录每个节点的
 `pending/running/succeeded/failed`，也不提供节点并行、结果绑定或断点恢复。
+
+## Reflection Agent
+
+`reflection` 模式在执行模型生成无工具调用的候选答案后，交给独立 Critic 评审。候选答案
+只有在 Critic 返回 `accept` 后才写入 Memory；`revise` 会把经过严格 JSON 校验的反馈作为
+临时上下文交给执行模型，并在配置的预算内重新生成。被拒绝的草稿不会写入 Memory，也不会
+通过 `llm.token` 流式事件发送给用户。
+
+Critic 非法响应、调用失败或超时统一转换为 `ReflectionError`，并以
+`error_source="critic"` 结束 Run。修订预算耗尽时进入 `reflection_limit`，失败终态不会携带
+或显示旧的用户消息作为最终答案。同一 session 的生成、评审和修订位于同一个 lease 内。
+
+配置：
+
+```text
+PATTERN=reflection
+CRITIC_TIMEOUT_S=30
+CRITIC_MAX_FEEDBACK_CHARS=2000
+REFLECTION_REVISION_ROUNDS=1
+```
+
+`CRITIC_MAX_FEEDBACK_CHARS` 不得超过 `TOOL_ROUTER_MAX_QUERY_CHARS`；配置在启动时验证。
+Reflection 模式使用缓冲输出：CLI 在答案通过评审后一次性显示最终文本，不会提前显示候选
+草稿。每次评审会形成一个不含候选正文和反馈正文的 `CRITIQUE` Step，并占用
+`max_steps` 预算。当前实现不提供整个 Run 的统一总超时，也不声称 Critic 必然提高答案
+正确率。
 
 ## 技术栈
 

@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     base_url: str
     tavily_api_key: str = ""
     # D24 验收：Prompt 可配置 —— 提示模式（react / plan_execute / reflection）
-    pattern: str = "react"
+    pattern: str = "reflection"
     # P0-1：shell_exec 执行目录由配置注入（用户无法通过命令指定）；空 = 项目根
     exec_cwd: str = ""
     tool_router_model: str = Field(
@@ -71,6 +71,32 @@ class Settings(BaseSettings):
         gt=0,
         le=16_384,
     )
+    critic_timeout_s: float = Field(
+        default=30.0,
+        gt=0,
+        allow_inf_nan=False,
+    )
+    critic_max_feedback_chars: int = Field(
+        default=2000,
+        gt=0,
+        le=16_384,
+    )
+    reflection_revision_rounds: int = Field(
+        default=1,
+        ge=0,
+        le=10,
+    )
+
+    @model_validator(mode="after")
+    def validate_reflection_limits(self) -> "Settings":
+        if self.critic_max_feedback_chars > self.tool_router_max_query_chars:
+            raise ValueError(
+                "critic_max_feedback_chars must not exceed "
+                "tool_router_max_query_chars"
+            )
+
+        return self
+
     model_config = SettingsConfigDict(
         env_file = ".env",
         env_file_encoding="utf-8",

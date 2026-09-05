@@ -8,6 +8,7 @@ from typing import Any
 class StepKind(str, Enum):
     LLM_CALL = "llm_call"
     TOOL_EXEC = "tool_exec"
+    CRITIQUE = "critique"
     FINAL_ANSWER = "final_answer"
 
 @dataclass

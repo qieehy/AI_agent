@@ -1,12 +1,12 @@
 import asyncio
+import json
 import math
 import re
-import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Callable, Awaitable, Any, TypeAlias
+from typing import Any, TypeAlias
 
 from errors import PlannerError
-
 
 _TASK_ID = re.compile(
     r"^[A-Za-z][A-Za-z0-9_-]{0,63}$"

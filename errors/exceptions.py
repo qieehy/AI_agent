@@ -7,6 +7,7 @@
 - context: dict，附加上下文（api_name / status_code / retry_count 等）
 - __str__ 输出格式：<ClassName>: <message> | context=<dict> | cause=<cause>
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -18,15 +19,16 @@ class AgentError(Exception):
     用途：runtime 内部用 except AgentError 统一兜底，
     防止未预期异常逃逸到 main 循环。
     """
+
     def __init__(
         self,
         message: str,
         *,
         context: dict[str, Any] | None = None,
-    )->None:
+    ) -> None:
         super().__init__(message)
         self.message = message
-        self.context = context or {}     #默认赋值None, 后无参数时创建空dict, 避免默认context共享
+        self.context = context or {}  # 默认赋值None, 后无参数时创建空dict, 避免默认context共享
 
     def __str__(self) -> str:
         parts = [self.message]
@@ -63,6 +65,7 @@ class ConfigError(AgentError):
 
     ConfigError 不应重试，直接 FAIL。
     """
+
 
 class MemoryError(AgentError):
     """记忆层业务失败（存储不可用 / 摘要 LLM 失败 / 向量库宕机）。"""
@@ -107,5 +110,10 @@ class EmbeddingWorkerTimeoutError(EmbeddingWorkerError):
             context={"phase": phase, "timeout_s": timeout_s},
         )
 
+
 class PlannerError(AgentError):
     """Planning failed or produced an invalid task plan."""
+
+
+class ReflectionError(AgentError):
+    """Reflection failed or produced an invalid critique."""

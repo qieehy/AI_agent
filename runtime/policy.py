@@ -28,22 +28,20 @@ class LoopPolicy:
     max_consecutive_repeats: int = 3
     validation_feedback_rounds: int = 1
     tool_error_feedback_rounds: int = 1
+    reflection_revision_rounds: int = 1
 
     def __post_init__(self) -> None:
+        if self.reflection_revision_rounds < 0:
+            raise ConfigError("reflection_revision_rounds must be greater than or equal to 0")
+
         if self.max_steps <= 0:
             raise ConfigError("max_steps must be greater than 0")
 
         if self.max_consecutive_repeats <= 0:
-            raise ConfigError(
-                "max_consecutive_repeats must be greater than 0"
-            )
+            raise ConfigError("max_consecutive_repeats must be greater than 0")
 
         if self.validation_feedback_rounds < 0:
-            raise ConfigError(
-                "validation_feedback_rounds must be greater than or equal to 0"
-            )
+            raise ConfigError("validation_feedback_rounds must be greater than or equal to 0")
 
         if self.tool_error_feedback_rounds < 0:
-            raise ConfigError(
-                "tool_error_feedback_rounds must be greater than or equal to 0"
-            )
+            raise ConfigError("tool_error_feedback_rounds must be greater than or equal to 0")
